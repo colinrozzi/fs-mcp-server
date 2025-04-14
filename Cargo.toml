@@ -10,6 +10,10 @@ license = "MIT"
 name = "simple_client"
 path = "examples/simple_client.rs"
 
+[[example]]
+name = "enhanced_client"
+path = "examples/enhanced_client.rs"
+
 [dependencies]
 mcp-protocol = { git = "https://github.com/colinrozzi/rust-mcp" }
 mcp-server = { git = "https://github.com/colinrozzi/rust-mcp" }

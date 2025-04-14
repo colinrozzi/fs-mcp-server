@@ -161,6 +161,72 @@ fn build_server(
         }
     );
     
+    // Add the write tool
+    server_builder = server_builder.with_tool(
+        "fs.write",
+        Some("Write content to a file"),
+        tools::write::schema(),
+        {
+            let root = root_dir.clone();
+            move |args| tools::write::execute(&args, &root)
+        }
+    );
+    
+    // Add the mkdir tool
+    server_builder = server_builder.with_tool(
+        "fs.mkdir",
+        Some("Create directories"),
+        tools::mkdir::schema(),
+        {
+            let root = root_dir.clone();
+            move |args| tools::mkdir::execute(&args, &root)
+        }
+    );
+    
+    // Add the delete tool
+    server_builder = server_builder.with_tool(
+        "fs.delete",
+        Some("Delete files or directories"),
+        tools::delete::schema(),
+        {
+            let root = root_dir.clone();
+            move |args| tools::delete::execute(&args, &root)
+        }
+    );
+    
+    // Add the copy tool
+    server_builder = server_builder.with_tool(
+        "fs.copy",
+        Some("Copy files or directories"),
+        tools::copy::schema(),
+        {
+            let root = root_dir.clone();
+            move |args| tools::copy::execute(&args, &root)
+        }
+    );
+    
+    // Add the move tool
+    server_builder = server_builder.with_tool(
+        "fs.move",
+        Some("Move or rename files or directories"),
+        tools::move_file::schema(),
+        {
+            let root = root_dir.clone();
+            move |args| tools::move_file::execute(&args, &root)
+        }
+    );
+    
+    // Add the info tool
+    server_builder = server_builder.with_tool(
+        "fs.info",
+        Some("Get detailed information about a file or directory"),
+        tools::info::schema(),
+        {
+            let root = root_dir.clone();
+            move |args| tools::info::execute(&args, &root)
+        }
+    );
+    
     // Add the search tool (non-async version)
     server_builder = server_builder.with_tool(
         "fs.search",

@@ -8,17 +8,19 @@ The Filesystem MCP Server provides a standardized interface for interacting with
 
 ## Features
 
-Currently implemented:
-- **File listing**: List files and directories with optional glob pattern filtering
-- **File reading**: Read file contents with support for text and binary formats
-- **Content searching**: Grep-like functionality for searching text in files
+The server provides the following MCP tools:
 
-Planned features:
-- File writing
-- Directory creation
-- File deletion
-- File copying and moving
-- File information retrieval
+1. **fs.list**: List files and directories with metadata
+2. **fs.read**: Read file contents with various encoding options
+3. **fs.write**: Create or update files with content
+4. **fs.mkdir**: Create directories
+5. **fs.delete**: Delete files or directories
+6. **fs.copy**: Copy files or directories
+7. **fs.move**: Move or rename files or directories
+8. **fs.info**: Get detailed file/directory information
+9. **fs.search**: Search file contents (grep-like functionality)
+
+All operations are constrained to a configurable root directory for security.
 
 ## Security
 
