@@ -40,7 +40,7 @@ pub fn schema() -> Value {
         "properties": {
             "path": {
                 "type": "string",
-                "description": "Path to list files from (full path or relative to one of the allowed directories)"
+                "description": "Full path to the directory to list files from"
             },
             "pattern": {
                 "type": "string",
@@ -194,8 +194,8 @@ pub fn execute(args: &Value, allowed_paths: &AllowedPaths) -> Result<ToolCallRes
             "unknown"
         };
         
-        // Get the closest relative path from allowed directories
-        let entry_path = allowed_paths.closest_relative_path(entry.path());
+        // Use the full path
+        let entry_path = entry.path().to_string_lossy().to_string();
         
         // Create entry
         let mut result_entry = Entry {

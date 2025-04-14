@@ -20,6 +20,10 @@ All operations are constrained to a configurable set of allowed directories. The
 2. Validate that the resulting path is contained within at least one of the designated allowed directories
 3. Reject any attempts to access paths outside the allowed directories with appropriate error messages
 
+### Path Requirements
+
+All file and directory paths must be specified as **full absolute paths**. The server validates that these paths are within at least one of the configured allowed directories to be accessible.
+
 ### Configuration
 
 The allowed directories can be specified through:
@@ -43,7 +47,7 @@ Lists files and directories at a specified path.
   "properties": {
     "path": {
       "type": "string",
-      "description": "Path to list files from (full path or relative to one of the allowed directories)"
+      "description": "Full path to the directory to list files from"
     },
     "pattern": {
       "type": "string",
@@ -76,7 +80,7 @@ Lists files and directories at a specified path.
   "entries": [
     {
       "name": "example.txt",
-      "path": "path/to/example.txt",
+      "path": "/absolute/path/to/example.txt",
       "type": "file",
       "size": 1024,
       "modified": "2024-04-10T15:30:00Z",
@@ -84,7 +88,7 @@ Lists files and directories at a specified path.
     },
     {
       "name": "documents",
-      "path": "path/to/documents",
+      "path": "/absolute/path/to/documents",
       "type": "directory",
       "modified": "2024-04-09T12:00:00Z",
       "is_hidden": false
@@ -104,7 +108,7 @@ Reads file contents with support for different encodings and partial reads.
   "properties": {
     "path": {
       "type": "string",
-      "description": "Path to the file to read (full path or relative to one of the allowed directories)"
+      "description": "Full path to the file to read"
     },
     "encoding": {
       "type": "string",
@@ -139,7 +143,7 @@ Reads file contents with support for different encodings and partial reads.
   "truncated": false,
   "line_count": 20,
   "metadata": {
-    "path": "path/to/file.txt",
+    "path": "/absolute/path/to/file.txt",
     "modified": "2024-04-10T15:30:00Z",
     "size": 1024
   }
@@ -157,7 +161,7 @@ Creates or updates files with specified content.
   "properties": {
     "path": {
       "type": "string",
-      "description": "Path to the file to write (full path or relative to one of the allowed directories)"
+      "description": "Full path to the file to write"
     },
     "content": {
       "type": "string",
@@ -189,10 +193,10 @@ Creates or updates files with specified content.
 ```json
 {
   "success": true,
-  "path": "path/to/file.txt",
+  "path": "/absolute/path/to/file.txt",
   "bytes_written": 1024,
   "metadata": {
-    "path": "path/to/file.txt",
+    "path": "/absolute/path/to/file.txt",
     "modified": "2024-04-10T15:30:00Z",
     "size": 1024
   }
@@ -210,7 +214,7 @@ Creates directories.
   "properties": {
     "path": {
       "type": "string",
-      "description": "Path to the directory to create (full path or relative to one of the allowed directories)"
+      "description": "Full path to the directory to create"
     },
     "recursive": {
       "type": "boolean",
@@ -226,7 +230,7 @@ Creates directories.
 ```json
 {
   "success": true,
-  "path": "path/to/new_directory"
+  "path": "/absolute/path/to/new_directory"
 }
 ```
 
@@ -241,7 +245,7 @@ Deletes files or directories.
   "properties": {
     "path": {
       "type": "string",
-      "description": "Path to delete (full path or relative to one of the allowed directories)"
+      "description": "Full path to the file or directory to delete"
     },
     "recursive": {
       "type": "boolean",
@@ -262,7 +266,7 @@ Deletes files or directories.
 ```json
 {
   "success": true,
-  "path": "path/to/deleted_item",
+  "path": "/absolute/path/to/deleted_item",
   "type": "file"
 }
 ```
@@ -278,11 +282,11 @@ Copies files or directories.
   "properties": {
     "source": {
       "type": "string",
-      "description": "Source path (full path or relative to one of the allowed directories)"
+      "description": "Full path to the source file or directory"
     },
     "destination": {
       "type": "string",
-      "description": "Destination path (full path or relative to one of the allowed directories)"
+      "description": "Full path to the destination file or directory"
     },
     "overwrite": {
       "type": "boolean",
@@ -303,8 +307,8 @@ Copies files or directories.
 ```json
 {
   "success": true,
-  "source": "path/to/source",
-  "destination": "path/to/destination",
+  "source": "/absolute/path/to/source",
+  "destination": "/absolute/path/to/destination",
   "bytes_copied": 5242880
 }
 ```
@@ -320,11 +324,11 @@ Moves or renames files or directories.
   "properties": {
     "source": {
       "type": "string",
-      "description": "Source path (full path or relative to one of the allowed directories)"
+      "description": "Full path to the source file or directory"
     },
     "destination": {
       "type": "string",
-      "description": "Destination path (full path or relative to one of the allowed directories)"
+      "description": "Full path to the destination file or directory"
     },
     "overwrite": {
       "type": "boolean",
@@ -340,8 +344,8 @@ Moves or renames files or directories.
 ```json
 {
   "success": true,
-  "source": "path/to/source",
-  "destination": "path/to/destination"
+  "source": "/absolute/path/to/source",
+  "destination": "/absolute/path/to/destination"
 }
 ```
 
@@ -356,7 +360,7 @@ Gets detailed information about a file or directory.
   "properties": {
     "path": {
       "type": "string",
-      "description": "Path to get information for (full path or relative to one of the allowed directories)"
+      "description": "Full path to the file or directory to get information for"
     }
   },
   "required": ["path"]
@@ -369,7 +373,7 @@ Gets detailed information about a file or directory.
   "exists": true,
   "type": "file",
   "name": "example.txt",
-  "path": "path/to/example.txt",
+  "path": "/absolute/path/to/example.txt",
   "size": 1024,
   "created": "2024-04-09T12:00:00Z",
   "modified": "2024-04-10T15:30:00Z",
@@ -394,7 +398,7 @@ Searches file contents for matching patterns (grep-like functionality).
   "properties": {
     "root_path": {
       "type": "string",
-      "description": "Root directory to start the search from (full path or relative to one of the allowed directories)"
+      "description": "Full path to the root directory to start the search from"
     },
     "pattern": {
       "type": "string",
@@ -448,7 +452,7 @@ Searches file contents for matching patterns (grep-like functionality).
   "files_matched": 3,
   "matches": [
     {
-      "file": "path/to/file1.txt",
+      "file": "/absolute/path/to/file1.txt",
       "matches": [
         {
           "line_number": 42,
@@ -462,7 +466,7 @@ Searches file contents for matching patterns (grep-like functionality).
       ]
     },
     {
-      "file": "path/to/file2.txt",
+      "file": "/absolute/path/to/file2.txt",
       "matches": [
         {
           "line_number": 10,
@@ -492,9 +496,9 @@ Lists all directories that the server is configured to allow access to.
 ```json
 {
   "directories": [
-    "/path/to/allowed/directory1",
-    "/path/to/allowed/directory2",
-    "/another/allowed/path"
+    "/absolute/path/to/allowed/directory1",
+    "/absolute/path/to/allowed/directory2",
+    "/absolute/path/to/allowed/directory3"
   ],
   "count": 3
 }
@@ -532,7 +536,7 @@ Error responses will have the following format:
     "code": "error_code",
     "message": "Human-readable error message",
     "details": {
-      "path": "path/that/caused/error",
+      "path": "/absolute/path/that/caused/error",
       "operation": "operation_that_failed"
     }
   }
@@ -570,10 +574,10 @@ The server supports the following configuration options:
 ## Implementation Details
 
 1. **Path Handling**
+   - All paths must be specified as full absolute paths
    - All paths are validated against the server's allowed directories
    - Symlinks are resolved to their canonical paths
    - Paths are normalized to handle different separators
-   - Relative paths are resolved against the closest allowed directory
 
 2. **File Size Limits**
    - Large file reads are chunked
@@ -592,8 +596,8 @@ The server supports the following configuration options:
 
 1. **Path Traversal Protection**
    - All paths are canonicalized before validation
-   - No relative paths that escape the allowed directories are allowed
-   - When multiple allowed directories are specified, each path is checked against all of them
+   - Paths must be specified as full absolute paths
+   - All paths must be within one of the allowed directories
 
 2. **Resource Limitations**
    - Maximum file size limits to prevent memory exhaustion

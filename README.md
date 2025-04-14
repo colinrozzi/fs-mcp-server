@@ -27,6 +27,10 @@ All operations are constrained to configurable allowed directories for security.
 
 All filesystem operations are constrained to a set of configurable allowed directories. The server validates paths to prevent directory traversal attacks and other security issues. Operations that would access files outside the allowed directories are rejected with appropriate error messages.
 
+## Path Requirements
+
+All file and directory paths provided to the server must be specified as **full absolute paths**. These paths must be located within one of the configured allowed directories to be accessible.
+
 ## Installation
 
 Prerequisites:
@@ -94,7 +98,7 @@ The server provides the following MCP tools:
 Lists files and directories at a specified path.
 
 Parameters:
-- `path`: Path to list files from (full path or relative to one of the allowed directories)
+- `path`: Full path to the directory to list files from
 - `pattern`: Optional glob pattern to filter files (default: "*")
 - `recursive`: Whether to list files recursively (default: false)
 - `include_hidden`: Whether to include hidden files (default: false)
@@ -105,7 +109,7 @@ Parameters:
 Reads file contents with support for different encodings and partial reads.
 
 Parameters:
-- `path`: Path to the file to read (full path or relative to one of the allowed directories)
+- `path`: Full path to the file to read
 - `encoding`: File encoding (utf8, base64, binary) (default: utf8)
 - `start_line`: Start line for partial read (0-indexed)
 - `end_line`: End line for partial read (inclusive)
@@ -116,7 +120,7 @@ Parameters:
 Searches file contents for matching patterns (grep-like functionality).
 
 Parameters:
-- `root_path`: Root directory to start the search from (full path or relative to one of the allowed directories)
+- `root_path`: Full path to the root directory to start the search from
 - `pattern`: Text pattern to search for in files
 - `regex`: Whether to treat pattern as regex (default: false)
 - `file_pattern`: Optional glob pattern to filter which files to search (default: "*")

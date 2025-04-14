@@ -26,6 +26,10 @@ pub fn execute(args: &Value, allowed_paths: &AllowedPaths) -> Result<ToolCallRes
         text.push_str(&format!("{}. {}\n", i + 1, dir.display()));
     }
     
+    // Add note about using full paths
+    text.push_str("\nNote: All file and directory paths in requests must be specified as full paths. ");
+    text.push_str("Paths must be within one of these allowed directories to be accessible.\n");
+    
     // Return the result
     Ok(ToolCallResult {
         content: vec![ToolContent::Text {

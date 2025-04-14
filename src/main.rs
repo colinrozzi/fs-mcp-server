@@ -1,9 +1,8 @@
 use anyhow::{Context, Result};
 use clap::Parser;
-use mcp_server::{ServerBuilder, transport::StdioTransport};
+use mcp_server::{transport::StdioTransport, ServerBuilder};
 use std::{
-    env,
-    fs,
+    env, fs,
     io::{self, BufRead},
     path::{Path, PathBuf},
 };
@@ -25,23 +24,23 @@ struct CliArgs {
     /// Allowed directories for filesystem operations (comma-separated)
     #[clap(long, env = "FS_ALLOWED_DIRS", value_delimiter = ',')]
     allowed_dirs: Option<Vec<PathBuf>>,
-    
+
     /// Path to a configuration file listing allowed directories (one per line)
     #[clap(long, env = "FS_CONFIG_FILE")]
     config_file: Option<PathBuf>,
-    
+
     /// Maximum file size for read operations (in bytes)
     #[clap(long, env = "FS_MAX_FILE_SIZE", default_value = "10485760")]
     max_file_size: u64,
-    
+
     /// Request timeout in seconds
     #[clap(long, env = "FS_REQUEST_TIMEOUT", default_value = "30")]
     request_timeout: u64,
-    
+
     /// Log level
     #[clap(long, env = "FS_LOG_LEVEL", default_value = "info")]
     log_level: String,
-    
+
     /// Log file path
     #[clap(long, env = "FS_LOG_FILE")]
     log_file: Option<PathBuf>,
@@ -51,18 +50,18 @@ struct CliArgs {
 async fn main() -> Result<()> {
     // Parse command line arguments
     let args = CliArgs::parse();
-    
+
     // Setup logging
     setup_logging(&args.log_level, args.log_file.as_deref())?;
-    
+
     // Determine allowed directories
-    let allowed_dirs = determine_allowed_dirs(&args)
-        .context("Failed to determine allowed directories")?;
-    
+    let allowed_dirs =
+        determine_allowed_dirs(&args).context("Failed to determine allowed directories")?;
+
     // Initialize the AllowedPaths struct
-    let allowed_paths = AllowedPaths::new(allowed_dirs)
-        .context("Failed to initialize allowed paths")?;
-    
+    let allowed_paths =
+        AllowedPaths::new(allowed_dirs).context("Failed to initialize allowed paths")?;
+
     info!("Starting fs-mcp-server");
     info!("Allowed directories:");
     for (i, path) in allowed_paths.all_paths().iter().enumerate() {
@@ -70,14 +69,14 @@ async fn main() -> Result<()> {
     }
     info!("Max file size: {} bytes", args.max_file_size);
     info!("Request timeout: {} seconds", args.request_timeout);
-    
+
     // Create and build server
     let server = build_server(allowed_paths, args.max_file_size)?;
-    
+
     // Run server
     info!("Server initialized. Waiting for client connection...");
     server.run().await?;
-    
+
     info!("Server shutting down");
     Ok(())
 }
@@ -85,24 +84,26 @@ async fn main() -> Result<()> {
 /// Determine the list of allowed directories from command-line args and config file
 fn determine_allowed_dirs(args: &CliArgs) -> Result<Vec<PathBuf>> {
     let mut dirs = Vec::new();
-    
+
     // Process command-line allowed_dirs
     if let Some(arg_dirs) = &args.allowed_dirs {
         dirs.extend(arg_dirs.clone());
     }
-    
+
     // Process config file if specified
     if let Some(config_path) = &args.config_file {
-        let dirs_from_config = read_allowed_dirs_from_config(config_path)
-            .context(format!("Failed to read config file: {}", config_path.display()))?;
+        let dirs_from_config = read_allowed_dirs_from_config(config_path).context(format!(
+            "Failed to read config file: {}",
+            config_path.display()
+        ))?;
         dirs.extend(dirs_from_config);
     }
-    
+
     // If no directories specified, use current directory
     if dirs.is_empty() {
         dirs.push(env::current_dir()?);
     }
-    
+
     Ok(dirs)
 }
 
@@ -111,17 +112,17 @@ fn read_allowed_dirs_from_config(config_path: &Path) -> Result<Vec<PathBuf>> {
     let file = fs::File::open(config_path)?;
     let reader = io::BufReader::new(file);
     let mut dirs = Vec::new();
-    
+
     for line in reader.lines() {
         let line = line?;
         let trimmed = line.trim();
-        
+
         // Skip empty lines and comments
         if !trimmed.is_empty() && !trimmed.starts_with('#') {
             dirs.push(PathBuf::from(trimmed));
         }
     }
-    
+
     Ok(dirs)
 }
 
@@ -136,17 +137,23 @@ fn setup_logging(log_level: &str, log_file: Option<&Path>) -> Result<()> {
         "trace" => Level::TRACE,
         _ => Level::INFO,
     };
-    
+
+    let log_file = if let Some(path) = log_file {
+        Some(path.to_path_buf())
+    } else {
+        Some("/Users/colinrozzi/work/mcp-servers/fs-mcp-server/logs/fs-mcp-server.log".into())
+    };
+
     // Create the logger
     if let Some(log_file_path) = log_file {
         // Create parent directories if they don't exist
         if let Some(parent) = log_file_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        
+
         // Get a static string path to use in the closure
         let log_path = log_file_path.to_path_buf();
-        
+
         // Create a file logger
         let file_subscriber = fmt::Subscriber::builder()
             .with_max_level(level)
@@ -157,38 +164,26 @@ fn setup_logging(log_level: &str, log_file: Option<&Path>) -> Result<()> {
                         .create(true)
                         .append(true)
                         .open(path)
-                        .unwrap()
+                        .unwrap(),
                 ))
             })
             .with_ansi(false)
             .finish();
-        
+
         // Set up the subscriber
         tracing::subscriber::set_global_default(file_subscriber)
             .expect("Failed to set global default subscriber");
-    } else {
-        // Log to stderr with pretty formatting
-        let subscriber = fmt::Subscriber::builder()
-            .with_max_level(level)
-            .with_ansi(atty::is(atty::Stream::Stdout))
-            .finish();
-        
-        tracing::subscriber::set_global_default(subscriber)
-            .expect("Failed to set global default subscriber");
     }
-    
+
     Ok(())
 }
 
 // Build the MCP server with all filesystem tools
-fn build_server(
-    allowed_paths: AllowedPaths,
-    max_file_size: u64,
-) -> Result<mcp_server::Server> {
+fn build_server(allowed_paths: AllowedPaths, max_file_size: u64) -> Result<mcp_server::Server> {
     // Create a new server builder
-    let mut server_builder = ServerBuilder::new("filesystem-server", "0.1.0")
-        .with_transport(StdioTransport::new());
-    
+    let mut server_builder =
+        ServerBuilder::new("filesystem-server", "0.1.0").with_transport(StdioTransport::new());
+
     // Add the list tool
     server_builder = server_builder.with_tool(
         "list",
@@ -197,21 +192,17 @@ fn build_server(
         {
             let paths = allowed_paths.clone();
             move |args| tools::list::execute(&args, &paths)
-        }
+        },
     );
-    
+
     // Add the read tool
-    server_builder = server_builder.with_tool(
-        "read",
-        Some("Read file contents"),
-        tools::read::schema(),
-        {
+    server_builder =
+        server_builder.with_tool("read", Some("Read file contents"), tools::read::schema(), {
             let paths = allowed_paths.clone();
             let max_size = max_file_size;
             move |args| tools::read::execute(&args, &paths, max_size)
-        }
-    );
-    
+        });
+
     // Add the write tool
     server_builder = server_builder.with_tool(
         "write",
@@ -220,9 +211,9 @@ fn build_server(
         {
             let paths = allowed_paths.clone();
             move |args| tools::write::execute(&args, &paths)
-        }
+        },
     );
-    
+
     // Add the mkdir tool
     server_builder = server_builder.with_tool(
         "mkdir",
@@ -231,9 +222,9 @@ fn build_server(
         {
             let paths = allowed_paths.clone();
             move |args| tools::mkdir::execute(&args, &paths)
-        }
+        },
     );
-    
+
     // Add the delete tool
     server_builder = server_builder.with_tool(
         "delete",
@@ -242,9 +233,9 @@ fn build_server(
         {
             let paths = allowed_paths.clone();
             move |args| tools::delete::execute(&args, &paths)
-        }
+        },
     );
-    
+
     // Add the copy tool
     server_builder = server_builder.with_tool(
         "copy",
@@ -253,9 +244,9 @@ fn build_server(
         {
             let paths = allowed_paths.clone();
             move |args| tools::copy::execute(&args, &paths)
-        }
+        },
     );
-    
+
     // Add the move tool
     server_builder = server_builder.with_tool(
         "move",
@@ -264,9 +255,9 @@ fn build_server(
         {
             let paths = allowed_paths.clone();
             move |args| tools::move_file::execute(&args, &paths)
-        }
+        },
     );
-    
+
     // Add the info tool
     server_builder = server_builder.with_tool(
         "info",
@@ -275,9 +266,9 @@ fn build_server(
         {
             let paths = allowed_paths.clone();
             move |args| tools::info::execute(&args, &paths)
-        }
+        },
     );
-    
+
     // Add the search tool
     server_builder = server_builder.with_tool(
         "search",
@@ -286,9 +277,9 @@ fn build_server(
         {
             let paths = allowed_paths.clone();
             move |args| tools::search::execute(&args, &paths)
-        }
+        },
     );
-    
+
     // Add the list_allowed_dirs tool
     server_builder = server_builder.with_tool(
         "list_allowed_dirs",
@@ -297,9 +288,9 @@ fn build_server(
         {
             let paths = allowed_paths.clone();
             move |args| tools::list_allowed_dirs::execute(&args, &paths)
-        }
+        },
     );
-    
+
     // Build and return the server
     server_builder.build()
 }
