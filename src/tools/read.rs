@@ -4,23 +4,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     fs::File,
-    io::{self, BufRead, BufReader, Read},
-    path::{Path, PathBuf},
+    io::{BufRead, BufReader, Read},
+    path::Path,
 };
 use tracing::{debug, warn};
+use base64;
 
 use crate::utils::path::{is_text_file, validate_path, PathError};
-
-// Struct representing file read results
-#[derive(Debug, Serialize, Deserialize)]
-struct ReadResult {
-    content: String,
-    encoding: String,
-    size: u64,
-    truncated: bool,
-    line_count: Option<usize>,
-    metadata: FileMetadata,
-}
 
 // Struct representing file metadata
 #[derive(Debug, Serialize, Deserialize)]
@@ -199,15 +189,14 @@ pub fn execute(args: &Value, server_root: &Path, max_file_size: u64) -> Result<T
                     end_line,
                     max_size,
                     file_metadata,
-                    server_root,
                 )
             } else {
                 // Otherwise read the entire file (up to max_size)
-                read_text_file(&validated_path, max_size, file_metadata, server_root)
+                read_text_file(&validated_path, max_size, file_metadata)
             }
         }
         "base64" | "binary" => {
-            read_binary_file(&validated_path, max_size, file_metadata, server_root)
+            read_binary_file(&validated_path, max_size, file_metadata)
         }
         _ => {
             Ok(ToolCallResult {
@@ -227,7 +216,6 @@ fn read_text_lines(
     end_line: Option<usize>,
     max_size: u64,
     metadata: FileMetadata,
-    server_root: &Path,
 ) -> Result<ToolCallResult> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
@@ -270,19 +258,37 @@ fn read_text_lines(
         byte_count += line_bytes as u64;
     }
     
-    // Create result object
-    let result = ReadResult {
-        content,
-        encoding: "utf8".to_string(),
-        size: byte_count,
-        truncated,
-        line_count: Some(line_count),
-        metadata,
-    };
+    // Format result text
+    let mut result = format!("File: {}\n", metadata.path);
+    
+    if let Some(modified) = metadata.modified {
+        result.push_str(&format!("Modified: {}\n", modified));
+    }
+    
+    result.push_str(&format!("Size: {} bytes\n", metadata.size));
+    
+    if truncated {
+        result.push_str("Note: File was truncated due to size limit\n");
+    }
+    
+    if let Some(start_line) = start_line {
+        if let Some(end_line) = end_line {
+            result.push_str(&format!("Lines: {}-{} of {}\n", start_line, end_line, line_count));
+        } else {
+            result.push_str(&format!("Lines: {} to end of {} total\n", start_line, line_count));
+        }
+    } else if let Some(end_line) = end_line {
+        result.push_str(&format!("Lines: 0-{} of {}\n", end_line, line_count));
+    } else {
+        result.push_str(&format!("Total lines: {}\n", line_count));
+    }
+    
+    result.push_str("\n----- File Content -----\n\n");
+    result.push_str(&content);
     
     Ok(ToolCallResult {
-        content: vec![ToolContent::Json {
-            json: serde_json::to_value(result)?,
+        content: vec![ToolContent::Text {
+            text: result,
         }],
         is_error: Some(false),
     })
@@ -293,7 +299,6 @@ fn read_text_file(
     path: &Path,
     max_size: u64,
     metadata: FileMetadata,
-    server_root: &Path,
 ) -> Result<ToolCallResult> {
     let mut file = File::open(path)?;
     
@@ -309,19 +314,26 @@ fn read_text_file(
     // Count lines
     let line_count = content.lines().count();
     
-    // Create result object
-    let result = ReadResult {
-        content,
-        encoding: "utf8".to_string(),
-        size: bytes_to_read as u64,
-        truncated,
-        line_count: Some(line_count),
-        metadata,
-    };
+    // Format result text
+    let mut result = format!("File: {}\n", metadata.path);
+    
+    if let Some(modified) = metadata.modified {
+        result.push_str(&format!("Modified: {}\n", modified));
+    }
+    
+    result.push_str(&format!("Size: {} bytes\n", metadata.size));
+    result.push_str(&format!("Total lines: {}\n", line_count));
+    
+    if truncated {
+        result.push_str("Note: File was truncated due to size limit\n");
+    }
+    
+    result.push_str("\n----- File Content -----\n\n");
+    result.push_str(&content);
     
     Ok(ToolCallResult {
-        content: vec![ToolContent::Json {
-            json: serde_json::to_value(result)?,
+        content: vec![ToolContent::Text {
+            text: result,
         }],
         is_error: Some(false),
     })
@@ -332,7 +344,6 @@ fn read_binary_file(
     path: &Path,
     max_size: u64,
     metadata: FileMetadata,
-    server_root: &Path,
 ) -> Result<ToolCallResult> {
     let mut file = File::open(path)?;
     
@@ -349,19 +360,27 @@ fn read_binary_file(
     // Encode as base64
     let content = base64::encode(&buffer);
     
-    // Create result object
-    let result = ReadResult {
-        content,
-        encoding: "base64".to_string(),
-        size: bytes_read as u64,
-        truncated,
-        line_count: None, // Line count not applicable for binary files
-        metadata,
-    };
+    // Format result text
+    let mut result = format!("File: {}\n", metadata.path);
+    
+    if let Some(modified) = metadata.modified {
+        result.push_str(&format!("Modified: {}\n", modified));
+    }
+    
+    result.push_str(&format!("Size: {} bytes\n", metadata.size));
+    result.push_str(&format!("Bytes read: {}\n", bytes_read));
+    result.push_str("Encoding: base64\n");
+    
+    if truncated {
+        result.push_str("Note: File was truncated due to size limit\n");
+    }
+    
+    result.push_str("\n----- Base64 Encoded Content -----\n\n");
+    result.push_str(&content);
     
     Ok(ToolCallResult {
-        content: vec![ToolContent::Json {
-            json: serde_json::to_value(result)?,
+        content: vec![ToolContent::Text {
+            text: result,
         }],
         is_error: Some(false),
     })

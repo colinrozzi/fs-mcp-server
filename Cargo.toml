@@ -6,6 +6,10 @@ description = "A secure MCP server for filesystem operations"
 authors = ["Colin Rozzi"]
 license = "MIT"
 
+[[example]]
+name = "simple_client"
+path = "examples/simple_client.rs"
+
 [dependencies]
 mcp-protocol = { git = "https://github.com/colinrozzi/rust-mcp" }
 mcp-server = { git = "https://github.com/colinrozzi/rust-mcp" }
@@ -15,7 +19,7 @@ tokio = { version = "1.28", features = ["full"] }
 anyhow = "1.0"
 thiserror = "1.0"
 tracing = "0.1"
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4.4", features = ["derive", "env"] }
 glob = "0.3"
 walkdir = "2.4"
@@ -25,8 +29,11 @@ encoding_rs_io = "0.1"
 num_cpus = "1.16"
 atty = "0.2"
 tempfile = "3.8"
+base64 = "0.13"
 
 [dev-dependencies]
 assert_cmd = "2.0"
 predicates = "3.0"
 tempfile = "3.8"
+mcp-client = { git = "https://github.com/colinrozzi/rust-mcp" }
+tokio = { version = "1.28", features = ["full"] }

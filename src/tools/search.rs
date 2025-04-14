@@ -7,14 +7,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     fmt::Write as _,
-    fs::{self, File, Metadata},
-    io::{self, BufRead, BufReader, Read},
-    path::{Path, PathBuf},
-    sync::Arc,
+    fs::File,
+    io::{BufRead, BufReader, Read},
+    path::Path,
     time::{Duration, Instant},
 };
-use tokio::{sync::mpsc, task::JoinSet};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 use walkdir::{DirEntry, WalkDir};
 
 use crate::utils::path::{validate_path, PathError};
@@ -243,10 +241,10 @@ fn process_file(
     }
     
     // Convert absolute path to path relative to server root
-    let relative_path = path.strip_prefix(server_root)
-        .unwrap_or(path)
-        .to_string_lossy()
-        .into_owned();
+    let relative_path = match path.strip_prefix(server_root) {
+        Ok(rel_path) => rel_path.to_string_lossy().into_owned(),
+        Err(_) => path.to_string_lossy().into_owned(),
+    };
     
     Ok(Some(FileMatch {
         file: relative_path,
@@ -254,32 +252,8 @@ fn process_file(
     }))
 }
 
-// Worker function for processing files in parallel
-async fn search_worker(
-    receiver: mpsc::Receiver<PathBuf>,
-    regex: Arc<Regex>,
-    context_lines: usize,
-    server_root: Arc<Path>,
-) -> Vec<FileMatch> {
-    let mut results = Vec::new();
-    
-    while let Some(path) = receiver.recv().await {
-        match process_file(&path, &regex, context_lines, &server_root) {
-            Ok(Some(file_match)) => {
-                results.push(file_match);
-            }
-            Ok(None) => {}
-            Err(err) => {
-                error!("Error processing file {}: {}", path.display(), err);
-            }
-        }
-    }
-    
-    results
-}
-
-// Main search function
-async fn search_files(
+// Main search function - simplified to avoid async/await complications for now
+fn search_files(
     params: &SearchParams,
     server_root: &Path,
 ) -> Result<SearchResults> {
@@ -298,42 +272,21 @@ async fn search_files(
     };
     
     // Prepare regex for searching
-    let regex_builder = if params.regex {
+    let regex = if params.regex {
         RegexBuilder::new(&params.pattern)
-    } else {
-        RegexBuilder::new(&regex::escape(&params.pattern))
-    };
-    
-    let regex = Arc::new(
-        regex_builder
             .case_insensitive(!params.case_sensitive)
             .build()
-            .map_err(|e| anyhow!("Invalid regex pattern: {}", e))?,
-    );
+            .map_err(|e| anyhow!("Invalid regex pattern: {}", e))?
+    } else {
+        RegexBuilder::new(&regex::escape(&params.pattern))
+            .case_insensitive(!params.case_sensitive)
+            .build()
+            .map_err(|e| anyhow!("Invalid regex pattern: {}", e))?
+    };
     
     // Prepare file pattern
     let file_pattern = Pattern::new(&params.file_pattern)
         .map_err(|e| anyhow!("Invalid file pattern: {}", e))?;
-    
-    // Set up worker pool
-    let (tx, rx) = mpsc::channel(100); // Buffer size of 100
-    let num_workers = num_cpus::get().min(8); // Use up to 8 worker threads
-    let mut workers = JoinSet::new();
-    
-    // Start workers
-    let server_root = Arc::new(server_root.to_path_buf());
-    for _ in 0..num_workers {
-        let worker_rx = rx.clone();
-        let worker_regex = Arc::clone(&regex);
-        let worker_root = Arc::clone(&server_root);
-        workers.spawn(search_worker(
-            worker_rx,
-            worker_regex,
-            params.context_lines,
-            worker_root,
-        ));
-    }
-    drop(rx); // Drop the original receiver
     
     // Setup timeout
     let timeout = Duration::from_secs(params.timeout_secs);
@@ -346,8 +299,10 @@ async fn search_files(
         .into_iter();
     
     let mut files_searched = 0;
+    let mut all_matches = Vec::new();
+    let mut total_matches = 0;
     
-    // Process files
+    // Process files directly without async workers for now
     for entry in walker.filter_map(Result::ok) {
         // Check if we've exceeded the timeout
         if start_time.elapsed() > timeout {
@@ -358,9 +313,22 @@ async fn search_files(
         match should_process_entry(&entry, &file_pattern, params.max_file_size) {
             Ok(true) => {
                 files_searched += 1;
-                if tx.send(entry.path().to_path_buf()).await.is_err() {
-                    // All receivers have been dropped
-                    break;
+                
+                // Process the file
+                match process_file(entry.path(), &regex, params.context_lines, server_root) {
+                    Ok(Some(file_match)) => {
+                        total_matches += file_match.matches.len();
+                        all_matches.push(file_match);
+                        
+                        // Check if we've reached the maximum number of results
+                        if total_matches >= params.max_results {
+                            break;
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(err) => {
+                        error!("Error processing file {}: {}", entry.path().display(), err);
+                    }
                 }
             }
             Ok(false) => {} // Skip this file
@@ -369,40 +337,6 @@ async fn search_files(
             }
         }
     }
-    
-    // Drop sender to signal workers to finish
-    drop(tx);
-    
-    // Collect results from workers
-    let mut all_matches = Vec::new();
-    let mut total_matches = 0;
-    
-    while let Some(result) = workers.join_next().await {
-        match result {
-            Ok(file_matches) => {
-                for file_match in file_matches {
-                    total_matches += file_match.matches.len();
-                    all_matches.push(file_match);
-                    
-                    // Check if we've reached the maximum number of results
-                    if total_matches >= params.max_results {
-                        break;
-                    }
-                }
-            }
-            Err(e) => {
-                error!("Worker task failed: {}", e);
-            }
-        }
-        
-        // Check if we've reached the maximum number of results
-        if total_matches >= params.max_results {
-            break;
-        }
-    }
-    
-    // Cancel any remaining workers
-    workers.abort_all();
     
     // Sort results by file path for consistent output
     all_matches.sort_by(|a, b| a.file.cmp(&b.file));
@@ -473,8 +407,8 @@ pub fn schema() -> Value {
     })
 }
 
-// Execute the search tool
-pub async fn execute(args: &Value, server_root: &Path) -> Result<ToolCallResult> {
+// Execute the search tool - simplified to sync version
+pub fn execute(args: &Value, server_root: &Path) -> Result<ToolCallResult> {
     // Parse arguments
     let params: SearchParams = match serde_json::from_value(args.clone()) {
         Ok(params) => params,
@@ -494,7 +428,7 @@ pub async fn execute(args: &Value, server_root: &Path) -> Result<ToolCallResult>
     );
 
     // Perform the search
-    match search_files(&params, server_root).await {
+    match search_files(&params, server_root) {
         Ok(results) => {
             // Format results
             if results.total_matches == 0 {
@@ -509,48 +443,37 @@ pub async fn execute(args: &Value, server_root: &Path) -> Result<ToolCallResult>
                 });
             }
 
-            // Format as JSON or text based on result complexity
-            if results.total_matches > 10 || results.files_matched > 3 {
-                // Return JSON for complex results
-                return Ok(ToolCallResult {
-                    content: vec![ToolContent::Json {
-                        json: serde_json::to_value(results)?,
-                    }],
-                    is_error: Some(false),
-                });
-            } else {
-                // Format simple results as text
-                let mut text = format!(
-                    "Found {} matches in {} files (searched {} total):\n\n",
-                    results.total_matches, results.files_matched, results.files_searched
-                );
+            // Format as text result
+            let mut text = format!(
+                "Found {} matches in {} files (searched {} total):\n\n",
+                results.total_matches, results.files_matched, results.files_searched
+            );
 
-                for file_match in results.matches {
-                    writeln!(&mut text, "File: {}", file_match.file)?;
+            for file_match in results.matches {
+                writeln!(&mut text, "File: {}", file_match.file)?;
+                
+                for m in file_match.matches {
+                    writeln!(&mut text, "  Line {}: {}", m.line_number, m.line.trim())?;
                     
-                    for m in file_match.matches {
-                        writeln!(&mut text, "  Line {}: {}", m.line_number, m.line.trim())?;
-                        
-                        if !m.context.is_empty() {
-                            for ctx in m.context {
-                                writeln!(
-                                    &mut text,
-                                    "    {} | {}", 
-                                    ctx.line_number,
-                                    ctx.content.trim()
-                                )?;
-                            }
-                            writeln!(&mut text)?;
+                    if !m.context.is_empty() {
+                        for ctx in m.context {
+                            writeln!(
+                                &mut text,
+                                "    {} | {}", 
+                                ctx.line_number,
+                                ctx.content.trim()
+                            )?;
                         }
+                        writeln!(&mut text)?;
                     }
-                    writeln!(&mut text)?;
                 }
-
-                return Ok(ToolCallResult {
-                    content: vec![ToolContent::Text { text }],
-                    is_error: Some(false),
-                });
+                writeln!(&mut text)?;
             }
+
+            return Ok(ToolCallResult {
+                content: vec![ToolContent::Text { text }],
+                is_error: Some(false),
+            });
         }
         Err(e) => {
             return Ok(ToolCallResult {

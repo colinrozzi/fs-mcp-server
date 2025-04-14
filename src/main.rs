@@ -1,14 +1,12 @@
 use anyhow::Result;
 use clap::Parser;
-use mcp_protocol::types::tool::{ToolCallResult, ToolContent};
 use mcp_server::{ServerBuilder, transport::StdioTransport};
-use serde_json::json;
 use std::{
     env,
     path::{Path, PathBuf},
 };
-use tracing::{debug, info, warn, Level};
-use tracing_subscriber::{fmt, EnvFilter};
+use tracing::{info, Level};
+use tracing_subscriber::fmt;
 
 mod tools;
 mod utils;
@@ -66,7 +64,7 @@ async fn main() -> Result<()> {
     info!("Request timeout: {} seconds", args.request_timeout);
 
     // Create and build server
-    let server = build_server(root_dir, args.max_file_size, args.request_timeout)?;
+    let server = build_server(root_dir, args.max_file_size)?;
 
     // Run server
     info!("Server initialized. Waiting for client connection...");
@@ -78,43 +76,52 @@ async fn main() -> Result<()> {
 
 // Setup logging with optional file output
 fn setup_logging(log_level: &str, log_file: Option<&Path>) -> Result<()> {
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| {
-            EnvFilter::new(format!("fs_mcp_server={}", log_level))
-        });
+    // Parse the log level
+    let level = match log_level.to_lowercase().as_str() {
+        "error" => Level::ERROR,
+        "warn" => Level::WARN,
+        "info" => Level::INFO,
+        "debug" => Level::DEBUG,
+        "trace" => Level::TRACE,
+        _ => Level::INFO,
+    };
 
-    let subscriber = fmt::Subscriber::builder()
-        .with_env_filter(env_filter)
-        .with_ansi(atty::is(atty::Stream::Stdout));
-
-    if let Some(log_file) = log_file {
+    // Create the logger
+    if let Some(log_file_path) = log_file {
         // Create parent directories if they don't exist
-        if let Some(parent) = log_file.parent() {
+        if let Some(parent) = log_file_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
 
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(log_file)?;
-
-        let subscriber = subscriber
+        // Get a static string path to use in the closure
+        let log_path = log_file_path.to_path_buf();
+        
+        // Create a file logger
+        let file_subscriber = fmt::Subscriber::builder()
+            .with_max_level(level)
             .with_writer(move || -> Box<dyn std::io::Write> {
+                let path = log_path.clone();
                 Box::new(std::io::BufWriter::new(
                     std::fs::OpenOptions::new()
                         .create(true)
                         .append(true)
-                        .open(log_file)
-                        .unwrap(),
+                        .open(path)
+                        .unwrap()
                 ))
             })
+            .with_ansi(false)
             .finish();
 
-        tracing::subscriber::set_global_default(subscriber)
+        // Set up the subscriber
+        tracing::subscriber::set_global_default(file_subscriber)
             .expect("Failed to set global default subscriber");
     } else {
-        // Log to stderr
-        let subscriber = subscriber.finish();
+        // Log to stderr with pretty formatting
+        let subscriber = fmt::Subscriber::builder()
+            .with_max_level(level)
+            .with_ansi(atty::is(atty::Stream::Stdout))
+            .finish();
+            
         tracing::subscriber::set_global_default(subscriber)
             .expect("Failed to set global default subscriber");
     }
@@ -126,7 +133,6 @@ fn setup_logging(log_level: &str, log_file: Option<&Path>) -> Result<()> {
 fn build_server(
     root_dir: PathBuf,
     max_file_size: u64,
-    request_timeout: u64,
 ) -> Result<mcp_server::Server> {
     // Create a new server builder
     let mut server_builder = ServerBuilder::new("filesystem-server", "0.1.0")
@@ -139,7 +145,7 @@ fn build_server(
         tools::list::schema(),
         {
             let root = root_dir.clone();
-            move |args| tools::list::execute(args, &root)
+            move |args| tools::list::execute(&args, &root)
         }
     );
     
@@ -151,22 +157,18 @@ fn build_server(
         {
             let root = root_dir.clone();
             let max_size = max_file_size;
-            move |args| tools::read::execute(args, &root, max_size)
+            move |args| tools::read::execute(&args, &root, max_size)
         }
     );
     
-    // Add the search tool
+    // Add the search tool (non-async version)
     server_builder = server_builder.with_tool(
         "fs.search",
         Some("Search file contents for matching patterns"),
         tools::search::schema(),
         {
             let root = root_dir.clone();
-            move |args| {
-                Box::pin(async move {
-                    tools::search::execute(args, &root).await
-                })
-            }
+            move |args| tools::search::execute(&args, &root)
         }
     );
     

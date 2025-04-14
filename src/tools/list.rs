@@ -3,6 +3,7 @@ use glob::Pattern;
 use mcp_protocol::types::tool::{ToolCallResult, ToolContent};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::fmt::Write;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use chrono::{DateTime, Utc};
@@ -247,10 +248,33 @@ pub fn execute(args: &Value, server_root: &Path) -> Result<ToolCallResult> {
         directory: path.to_string(),
     };
     
-    // Return as JSON
+    // Convert to text format
+    let mut text = format!("Directory: {}\n\n", results.directory);
+    
+    for entry in results.entries {
+        let type_str = match entry.entry_type.as_str() {
+            "directory" => "[DIR]",
+            "file" => "[FILE]",
+            "symlink" => "[LINK]",
+            _ => "[?]"
+        };
+        
+        // Format with type and name
+        let entry_text = format!("{} {}", type_str, entry.name);
+        
+        // Add size if available
+        let entry_with_size = if let Some(size) = entry.size {
+            format!("{} ({} bytes)", entry_text, size)
+        } else {
+            entry_text
+        };
+        
+        writeln!(&mut text, "{}", entry_with_size)?;
+    }
+    
     Ok(ToolCallResult {
-        content: vec![ToolContent::Json {
-            json: serde_json::to_value(results)?,
+        content: vec![ToolContent::Text {
+            text,
         }],
         is_error: Some(false),
     })
