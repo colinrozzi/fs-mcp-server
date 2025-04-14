@@ -7,7 +7,7 @@ use std::{
 };
 use tracing::debug;
 
-use crate::utils::path::{validate_path, PathError};
+use crate::utils::path::{AllowedPaths, PathError};
 
 // Define the schema for the tool
 pub fn schema() -> Value {
@@ -16,11 +16,11 @@ pub fn schema() -> Value {
         "properties": {
             "source": {
                 "type": "string",
-                "description": "Source path (relative to server root)"
+                "description": "Source path (full path or relative to one of the allowed directories)"
             },
             "destination": {
                 "type": "string",
-                "description": "Destination path (relative to server root)"
+                "description": "Destination path (full path or relative to one of the allowed directories)"
             },
             "overwrite": {
                 "type": "boolean",
@@ -32,14 +32,14 @@ pub fn schema() -> Value {
     })
 }
 
-// Execute the move tool
-pub fn execute(args: &Value, server_root: &Path) -> Result<ToolCallResult> {
+// Execute the move_file tool
+pub fn execute(args: &Value, allowed_paths: &AllowedPaths) -> Result<ToolCallResult> {
     // Extract required parameters
-    let source = args.get("source")
+    let source_str = args.get("source")
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow!("Missing source parameter"))?;
     
-    let destination = args.get("destination")
+    let destination_str = args.get("destination")
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow!("Missing destination parameter"))?;
     
@@ -49,214 +49,252 @@ pub fn execute(args: &Value, server_root: &Path) -> Result<ToolCallResult> {
         .unwrap_or(false);
     
     debug!(
-        "Moving: '{}' to '{}', overwrite: {}",
-        source, destination, overwrite
+        "Moving from '{}' to '{}', overwrite: {}",
+        source_str, destination_str, overwrite
     );
     
+    // Create Path objects
+    let source_path = Path::new(source_str);
+    let destination_path = Path::new(destination_str);
+    
     // Validate the source path
-    let validated_source = match validate_path(source, server_root) {
+    let validated_source = match allowed_paths.validate_path(source_path) {
         Ok(p) => p,
-        Err(PathError::OutsideRoot) => {
-            return Ok(ToolCallResult {
-                content: vec![ToolContent::Text {
-                    text: "Source path is outside of the allowed root directory".to_string(),
-                }],
-                is_error: Some(true),
-            });
-        }
-        Err(PathError::NotFound) => {
-            return Ok(ToolCallResult {
-                content: vec![ToolContent::Text {
-                    text: format!("Source path not found: '{}'", source),
-                }],
-                is_error: Some(true),
-            });
-        }
-        Err(PathError::IoError(e)) => {
-            return Ok(ToolCallResult {
-                content: vec![ToolContent::Text {
-                    text: format!("IO error with source path: {}", e),
-                }],
-                is_error: Some(true),
-            });
+        Err(e) => {
+            match e {
+                PathError::OutsideAllowedPaths => {
+                    return Ok(ToolCallResult {
+                        content: vec![ToolContent::Text { 
+                            text: "Source path is outside of all allowed directories".to_string() 
+                        }],
+                        is_error: Some(true),
+                    });
+                },
+                PathError::NotFound => {
+                    return Ok(ToolCallResult {
+                        content: vec![ToolContent::Text { 
+                            text: format!("Source path not found: '{}'", source_str) 
+                        }],
+                        is_error: Some(true),
+                    });
+                },
+                PathError::IoError(io_err) => {
+                    return Ok(ToolCallResult {
+                        content: vec![ToolContent::Text { 
+                            text: format!("IO error for source path: {}", io_err) 
+                        }],
+                        is_error: Some(true),
+                    });
+                },
+            }
         }
     };
     
     // Validate the destination path
-    let validated_destination = match validate_path(destination, server_root) {
-        Ok(p) => {
-            // If the destination exists
-            if p.exists() {
-                if !overwrite {
+    let validated_destination = match allowed_paths.validate_path(destination_path) {
+        Ok(p) => p,
+        Err(e) => {
+            // For destination, NotFound is not necessarily an error,
+            // especially if we're creating a new file/directory
+            match e {
+                PathError::OutsideAllowedPaths => {
                     return Ok(ToolCallResult {
-                        content: vec![ToolContent::Text {
-                            text: format!("Destination already exists: '{}'. Use overwrite=true to overwrite.", destination),
+                        content: vec![ToolContent::Text { 
+                            text: "Destination path is outside of all allowed directories".to_string() 
                         }],
                         is_error: Some(true),
                     });
-                }
-                
-                // For move operations, if destination exists and is a directory,
-                // we need to ensure the source is not a directory or the move will fail
-                if p.is_dir() && !validated_source.is_dir() {
-                    // If destination is a directory, and source is a file, we need to
-                    // adjust the destination to include the filename
-                    let filename = validated_source.file_name().ok_or_else(|| anyhow!("Invalid source filename"))?;
-                    p.join(filename)
-                } else {
-                    p
-                }
-            } else {
-                p
-            }
-        }
-        Err(PathError::OutsideRoot) => {
-            return Ok(ToolCallResult {
-                content: vec![ToolContent::Text {
-                    text: "Destination path is outside of the allowed root directory".to_string(),
-                }],
-                is_error: Some(true),
-            });
-        }
-        Err(PathError::NotFound) => {
-            // For move operations, NotFound is expected for the destination
-            // The parent directory should exist though
-            if let Some(parent) = Path::new(destination).parent() {
-                let parent_path = server_root.join(parent);
-                
-                if !parent_path.exists() {
-                    // Create parent directories if they don't exist
-                    if let Err(e) = fs::create_dir_all(&parent_path) {
+                },
+                PathError::NotFound => {
+                    // If the parent exists, we can still move to a new location
+                    if let Some(parent) = destination_path.parent() {
+                        if parent.exists() {
+                            // This is fine, continue with the original path
+                            destination_path.to_path_buf()
+                        } else {
+                            return Ok(ToolCallResult {
+                                content: vec![ToolContent::Text { 
+                                    text: format!("Destination parent directory not found: '{}'", parent.display()) 
+                                }],
+                                is_error: Some(true),
+                            });
+                        }
+                    } else {
                         return Ok(ToolCallResult {
-                            content: vec![ToolContent::Text {
-                                text: format!("Failed to create parent directories for destination: {}", e),
+                            content: vec![ToolContent::Text { 
+                                text: format!("Destination path not found: '{}'", destination_str) 
                             }],
                             is_error: Some(true),
                         });
                     }
-                }
+                },
+                PathError::IoError(io_err) => {
+                    return Ok(ToolCallResult {
+                        content: vec![ToolContent::Text { 
+                            text: format!("IO error for destination path: {}", io_err) 
+                        }],
+                        is_error: Some(true),
+                    });
+                },
             }
-            
-            server_root.join(destination)
-        }
-        Err(PathError::IoError(e)) => {
-            return Ok(ToolCallResult {
-                content: vec![ToolContent::Text {
-                    text: format!("IO error with destination path: {}", e),
-                }],
-                is_error: Some(true),
-            });
         }
     };
     
-    // Check if source and destination are the same
-    if validated_source == validated_destination {
+    // Check if the source exists
+    if !validated_source.exists() {
         return Ok(ToolCallResult {
             content: vec![ToolContent::Text {
-                text: format!("Source and destination are the same: '{}'", source),
+                text: format!("Source path does not exist: '{}'", source_str),
             }],
             is_error: Some(true),
         });
     }
     
-    // Remove destination if it exists and overwrite is true
-    if validated_destination.exists() && overwrite {
-        let result = if validated_destination.is_dir() {
-            fs::remove_dir_all(&validated_destination)
-        } else {
-            fs::remove_file(&validated_destination)
-        };
-        
-        if let Err(e) = result {
+    // Check if the destination exists
+    if validated_destination.exists() {
+        // Handle directory-to-directory move
+        if validated_source.is_dir() && validated_destination.is_dir() {
+            let src_name = match validated_source.file_name() {
+                Some(name) => name,
+                None => {
+                    return Ok(ToolCallResult {
+                        content: vec![ToolContent::Text {
+                            text: "Invalid source directory name".to_string(),
+                        }],
+                        is_error: Some(true),
+                    });
+                }
+            };
+            
+            let new_dest = validated_destination.join(src_name);
+            if new_dest.exists() && !overwrite {
+                return Ok(ToolCallResult {
+                    content: vec![ToolContent::Text {
+                        text: format!("Destination already exists: '{}'", new_dest.display()),
+                    }],
+                    is_error: Some(true),
+                });
+            }
+            
+            // Move directory into destination directory
+            match fs::rename(&validated_source, &new_dest) {
+                Ok(_) => {
+                    let src_rel = allowed_paths.closest_relative_path(&validated_source);
+                    let dest_rel = allowed_paths.closest_relative_path(&new_dest);
+                    
+                    return Ok(ToolCallResult {
+                        content: vec![ToolContent::Text {
+                            text: format!("Directory moved from '{}' to '{}'", src_rel, dest_rel),
+                        }],
+                        is_error: Some(false),
+                    });
+                }
+                Err(e) => {
+                    return Ok(ToolCallResult {
+                        content: vec![ToolContent::Text {
+                            text: format!("Failed to move directory: {}", e),
+                        }],
+                        is_error: Some(true),
+                    });
+                }
+            }
+        }
+        // Handle file-to-directory move
+        else if validated_source.is_file() && validated_destination.is_dir() {
+            let src_name = match validated_source.file_name() {
+                Some(name) => name,
+                None => {
+                    return Ok(ToolCallResult {
+                        content: vec![ToolContent::Text {
+                            text: "Invalid source file name".to_string(),
+                        }],
+                        is_error: Some(true),
+                    });
+                }
+            };
+            
+            let new_dest = validated_destination.join(src_name);
+            if new_dest.exists() && !overwrite {
+                return Ok(ToolCallResult {
+                    content: vec![ToolContent::Text {
+                        text: format!("Destination file already exists: '{}'", new_dest.display()),
+                    }],
+                    is_error: Some(true),
+                });
+            }
+            
+            // Move file into destination directory
+            match fs::rename(&validated_source, &new_dest) {
+                Ok(_) => {
+                    let src_rel = allowed_paths.closest_relative_path(&validated_source);
+                    let dest_rel = allowed_paths.closest_relative_path(&new_dest);
+                    
+                    return Ok(ToolCallResult {
+                        content: vec![ToolContent::Text {
+                            text: format!("File moved from '{}' to '{}'", src_rel, dest_rel),
+                        }],
+                        is_error: Some(false),
+                    });
+                }
+                Err(e) => {
+                    return Ok(ToolCallResult {
+                        content: vec![ToolContent::Text {
+                            text: format!("Failed to move file: {}", e),
+                        }],
+                        is_error: Some(true),
+                    });
+                }
+            }
+        }
+        // Direct move with overwrite
+        else if overwrite {
+            // Delete destination first
+            if let Err(e) = fs::remove_file(&validated_destination) {
+                if let Err(e) = fs::remove_dir_all(&validated_destination) {
+                    return Ok(ToolCallResult {
+                        content: vec![ToolContent::Text {
+                            text: format!("Failed to overwrite destination: {}", e),
+                        }],
+                        is_error: Some(true),
+                    });
+                }
+            }
+        }
+        // Direct move without overwrite
+        else {
             return Ok(ToolCallResult {
                 content: vec![ToolContent::Text {
-                    text: format!("Failed to remove existing destination: {}", e),
+                    text: format!("Destination already exists: '{}'", destination_str),
                 }],
                 is_error: Some(true),
             });
         }
     }
     
-    // Perform the move operation
+    // Perform the move
     match fs::rename(&validated_source, &validated_destination) {
         Ok(_) => {
+            let src_rel = allowed_paths.closest_relative_path(&validated_source);
+            let dest_rel = allowed_paths.closest_relative_path(&validated_destination);
+            
             Ok(ToolCallResult {
                 content: vec![ToolContent::Text {
-                    text: format!("Successfully moved '{}' to '{}'", source, destination),
+                    text: format!(
+                        "{} moved from '{}' to '{}'",
+                        if validated_source.is_dir() { "Directory" } else { "File" },
+                        src_rel, dest_rel
+                    ),
                 }],
                 is_error: Some(false),
             })
         }
         Err(e) => {
-            // Special case for cross-device moves
-            if e.kind() == std::io::ErrorKind::CrossesDevices {
-                // Try to copy and then delete
-                debug!("Cross-device move detected, falling back to copy and delete");
-                
-                // Copy first
-                match copy_and_delete(&validated_source, &validated_destination) {
-                    Ok(_) => {
-                        Ok(ToolCallResult {
-                            content: vec![ToolContent::Text {
-                                text: format!("Successfully moved '{}' to '{}' (using copy and delete)", source, destination),
-                            }],
-                            is_error: Some(false),
-                        })
-                    }
-                    Err(copy_err) => {
-                        Ok(ToolCallResult {
-                            content: vec![ToolContent::Text {
-                                text: format!("Failed to move '{}' to '{}': {}", source, destination, copy_err),
-                            }],
-                            is_error: Some(true),
-                        })
-                    }
-                }
-            } else {
-                Ok(ToolCallResult {
-                    content: vec![ToolContent::Text {
-                        text: format!("Failed to move '{}' to '{}': {}", source, destination, e),
-                    }],
-                    is_error: Some(true),
-                })
-            }
+            Ok(ToolCallResult {
+                content: vec![ToolContent::Text {
+                    text: format!("Failed to move: {}", e),
+                }],
+                is_error: Some(true),
+            })
         }
     }
-}
-
-// Helper function to copy and then delete for cross-device moves
-fn copy_and_delete(src: &Path, dest: &Path) -> Result<()> {
-    if src.is_dir() {
-        // For directories, we need to do a recursive copy
-        copy_dir_all(src, dest)?;
-        fs::remove_dir_all(src)?;
-    } else {
-        // For files, a simple copy and delete
-        fs::copy(src, dest)?;
-        fs::remove_file(src)?;
-    }
-    
-    Ok(())
-}
-
-// Helper function to recursively copy a directory
-fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
-    if !dst.exists() {
-        fs::create_dir_all(dst)?;
-    }
-    
-    for entry in fs::read_dir(src)? {
-        let entry = entry?;
-        let ty = entry.file_type()?;
-        let src_path = entry.path();
-        let dst_path = dst.join(entry.file_name());
-        
-        if ty.is_dir() {
-            copy_dir_all(&src_path, &dst_path)?;
-        } else if ty.is_file() {
-            fs::copy(&src_path, &dst_path)?;
-        }
-    }
-    
-    Ok(())
 }

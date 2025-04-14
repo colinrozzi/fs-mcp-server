@@ -8,7 +8,7 @@ use std::{
 use tracing::debug;
 use walkdir::WalkDir;
 
-use crate::utils::path::{validate_path, PathError};
+use crate::utils::path::{AllowedPaths, PathError};
 
 // Define the schema for the tool
 pub fn schema() -> Value {
@@ -17,11 +17,11 @@ pub fn schema() -> Value {
         "properties": {
             "source": {
                 "type": "string",
-                "description": "Source path (relative to server root)"
+                "description": "Source path (full path or relative to one of the allowed directories)"
             },
             "destination": {
                 "type": "string",
-                "description": "Destination path (relative to server root)"
+                "description": "Destination path (full path or relative to one of the allowed directories)"
             },
             "overwrite": {
                 "type": "boolean",
@@ -39,13 +39,13 @@ pub fn schema() -> Value {
 }
 
 // Execute the copy tool
-pub fn execute(args: &Value, server_root: &Path) -> Result<ToolCallResult> {
+pub fn execute(args: &Value, allowed_paths: &AllowedPaths) -> Result<ToolCallResult> {
     // Extract required parameters
-    let source = args.get("source")
+    let source_str = args.get("source")
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow!("Missing source parameter"))?;
     
-    let destination = args.get("destination")
+    let destination_str = args.get("destination")
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow!("Missing destination parameter"))?;
     
@@ -59,246 +59,291 @@ pub fn execute(args: &Value, server_root: &Path) -> Result<ToolCallResult> {
         .unwrap_or(true);
     
     debug!(
-        "Copying: '{}' to '{}', overwrite: {}, recursive: {}",
-        source, destination, overwrite, recursive
+        "Copying from '{}' to '{}', overwrite: {}, recursive: {}",
+        source_str, destination_str, overwrite, recursive
     );
     
+    // Create Path objects
+    let source_path = Path::new(source_str);
+    let destination_path = Path::new(destination_str);
+    
     // Validate the source path
-    let validated_source = match validate_path(source, server_root) {
+    let validated_source = match allowed_paths.validate_path(source_path) {
         Ok(p) => p,
-        Err(PathError::OutsideRoot) => {
-            return Ok(ToolCallResult {
-                content: vec![ToolContent::Text {
-                    text: "Source path is outside of the allowed root directory".to_string(),
-                }],
-                is_error: Some(true),
-            });
+        Err(e) => {
+            match e {
+                PathError::OutsideAllowedPaths => {
+                    return Ok(ToolCallResult {
+                        content: vec![ToolContent::Text { 
+                            text: "Source path is outside of all allowed directories".to_string() 
+                        }],
+                        is_error: Some(true),
+                    });
+                },
+                PathError::NotFound => {
+                    return Ok(ToolCallResult {
+                        content: vec![ToolContent::Text { 
+                            text: format!("Source path not found: '{}'", source_str) 
+                        }],
+                        is_error: Some(true),
+                    });
+                },
+                PathError::IoError(io_err) => {
+                    return Ok(ToolCallResult {
+                        content: vec![ToolContent::Text { 
+                            text: format!("IO error for source path: {}", io_err) 
+                        }],
+                        is_error: Some(true),
+                    });
+                },
+            }
         }
-        Err(PathError::NotFound) => {
-            return Ok(ToolCallResult {
-                content: vec![ToolContent::Text {
-                    text: format!("Source path not found: '{}'", source),
-                }],
-                is_error: Some(true),
-            });
+    };
+    
+    // Validate the destination path
+    let validated_destination = match allowed_paths.validate_path(destination_path) {
+        Ok(p) => p,
+        Err(e) => {
+            // For destination, NotFound is not necessarily an error,
+            // especially if we're creating the destination
+            match e {
+                PathError::OutsideAllowedPaths => {
+                    return Ok(ToolCallResult {
+                        content: vec![ToolContent::Text { 
+                            text: "Destination path is outside of all allowed directories".to_string() 
+                        }],
+                        is_error: Some(true),
+                    });
+                },
+                PathError::NotFound => {
+                    // If the parent exists, we can still copy to a new location
+                    if let Some(parent) = destination_path.parent() {
+                        if parent.exists() {
+                            // This is fine, continue with the original path
+                            destination_path.to_path_buf()
+                        } else {
+                            return Ok(ToolCallResult {
+                                content: vec![ToolContent::Text { 
+                                    text: format!("Destination parent directory not found: '{}'", parent.display()) 
+                                }],
+                                is_error: Some(true),
+                            });
+                        }
+                    } else {
+                        return Ok(ToolCallResult {
+                            content: vec![ToolContent::Text { 
+                                text: format!("Destination path not found: '{}'", destination_str) 
+                            }],
+                            is_error: Some(true),
+                        });
+                    }
+                },
+                PathError::IoError(io_err) => {
+                    return Ok(ToolCallResult {
+                        content: vec![ToolContent::Text { 
+                            text: format!("IO error for destination path: {}", io_err) 
+                        }],
+                        is_error: Some(true),
+                    });
+                },
+            }
         }
-        Err(PathError::IoError(e)) => {
+    };
+    
+    // Check if the source exists
+    if !validated_source.exists() {
+        return Ok(ToolCallResult {
+            content: vec![ToolContent::Text {
+                text: format!("Source path does not exist: '{}'", source_str),
+            }],
+            is_error: Some(true),
+        });
+    }
+    
+    // Get source metadata
+    let source_metadata = match validated_source.metadata() {
+        Ok(m) => m,
+        Err(e) => {
             return Ok(ToolCallResult {
                 content: vec![ToolContent::Text {
-                    text: format!("IO error with source path: {}", e),
+                    text: format!("Failed to get source metadata: {}", e),
                 }],
                 is_error: Some(true),
             });
         }
     };
     
-    // Validate the destination path
-    let validated_destination = match validate_path(destination, server_root) {
-        Ok(p) => {
-            // If the destination exists
-            if p.exists() {
-                if !overwrite {
+    // Perform the copy
+    if source_metadata.is_dir() {
+        // Directory copy
+        if !recursive {
+            return Ok(ToolCallResult {
+                content: vec![ToolContent::Text {
+                    text: format!("Source is a directory but recursive is false: '{}'", source_str),
+                }],
+                is_error: Some(true),
+            });
+        }
+        
+        // Create destination directory if it doesn't exist
+        if !validated_destination.exists() {
+            match fs::create_dir_all(&validated_destination) {
+                Ok(_) => debug!("Created destination directory: '{}'", validated_destination.display()),
+                Err(e) => {
                     return Ok(ToolCallResult {
                         content: vec![ToolContent::Text {
-                            text: format!("Destination already exists: '{}'. Use overwrite=true to overwrite.", destination),
+                            text: format!("Failed to create destination directory: {}", e),
                         }],
                         is_error: Some(true),
                     });
                 }
             }
-            p
-        }
-        Err(PathError::OutsideRoot) => {
-            return Ok(ToolCallResult {
-                content: vec![ToolContent::Text {
-                    text: "Destination path is outside of the allowed root directory".to_string(),
-                }],
-                is_error: Some(true),
-            });
-        }
-        Err(PathError::NotFound) => {
-            // For copy operations, NotFound is expected for the destination
-            // The parent directory should exist though
-            if let Some(parent) = Path::new(destination).parent() {
-                let parent_path = server_root.join(parent);
-                
-                if !parent_path.exists() {
-                    // Create parent directories if they don't exist
-                    if let Err(e) = fs::create_dir_all(&parent_path) {
-                        return Ok(ToolCallResult {
-                            content: vec![ToolContent::Text {
-                                text: format!("Failed to create parent directories for destination: {}", e),
-                            }],
-                            is_error: Some(true),
-                        });
-                    }
-                }
-            }
-            
-            server_root.join(destination)
-        }
-        Err(PathError::IoError(e)) => {
-            return Ok(ToolCallResult {
-                content: vec![ToolContent::Text {
-                    text: format!("IO error with destination path: {}", e),
-                }],
-                is_error: Some(true),
-            });
-        }
-    };
-    
-    // Check if source is a directory
-    let is_dir = validated_source.is_dir();
-    
-    // Copy based on the type of source
-    if is_dir {
-        // Directory copy
-        if !recursive {
-            return Ok(ToolCallResult {
-                content: vec![ToolContent::Text {
-                    text: format!("Source is a directory but recursive=false. Cannot copy directory '{}'.", source),
-                }],
-                is_error: Some(true),
-            });
-        }
-        
-        // Create the destination directory if it doesn't exist
-        if !validated_destination.exists() {
-            if let Err(e) = fs::create_dir_all(&validated_destination) {
-                return Ok(ToolCallResult {
-                    content: vec![ToolContent::Text {
-                        text: format!("Failed to create destination directory: {}", e),
-                    }],
-                    is_error: Some(true),
-                });
-            }
         } else if !validated_destination.is_dir() {
             return Ok(ToolCallResult {
                 content: vec![ToolContent::Text {
-                    text: format!("Destination exists but is not a directory: '{}'", destination),
+                    text: format!("Destination exists but is not a directory: '{}'", destination_str),
                 }],
                 is_error: Some(true),
             });
         }
         
-        // Use walkdir to recursively copy the directory
-        let mut total_copied = 0;
-        let mut errors = Vec::new();
-        
-        // Calculate the base path length to create relative paths
-        let base_len = validated_source.as_os_str().len();
-        
-        for entry in WalkDir::new(&validated_source) {
-            let entry = match entry {
-                Ok(entry) => entry,
-                Err(e) => {
-                    errors.push(format!("Error walking directory: {}", e));
-                    continue;
-                }
-            };
-            
-            let src_path = entry.path();
-            
-            // Skip the source directory itself
-            if src_path == validated_source {
-                continue;
-            }
-            
-            // Create relative path and append to destination
-            let relative = &src_path.as_os_str().to_string_lossy()[base_len..];
-            let relative = relative.trim_start_matches(std::path::MAIN_SEPARATOR);
-            let dest_path = validated_destination.join(relative);
-            
-            if entry.file_type().is_dir() {
-                // Create directory
-                if !dest_path.exists() {
-                    if let Err(e) = fs::create_dir(&dest_path) {
-                        errors.push(format!("Failed to create directory '{}': {}", dest_path.display(), e));
-                    }
-                }
-            } else {
-                // Copy file
-                let copy_result = copy_file(src_path, &dest_path, overwrite);
-                match copy_result {
-                    Ok(bytes) => {
-                        total_copied += bytes;
-                    }
-                    Err(e) => {
-                        errors.push(format!("Failed to copy '{}' to '{}': {}", src_path.display(), dest_path.display(), e));
-                    }
-                }
-            }
-        }
-        
-        // Generate response
-        if errors.is_empty() {
-            Ok(ToolCallResult {
-                content: vec![ToolContent::Text {
-                    text: format!(
-                        "Successfully copied directory '{}' to '{}'. Total bytes copied: {}",
-                        source, destination, total_copied
-                    ),
-                }],
-                is_error: Some(false),
-            })
-        } else {
-            let mut message = format!(
-                "Partially copied directory '{}' to '{}' with {} errors:\n",
-                source, destination, errors.len()
-            );
-            
-            for (i, error) in errors.iter().enumerate().take(5) {
-                message.push_str(&format!("{}. {}\n", i + 1, error));
-            }
-            
-            if errors.len() > 5 {
-                message.push_str(&format!("... and {} more errors\n", errors.len() - 5));
-            }
-            
-            message.push_str(&format!("Total bytes copied: {}", total_copied));
-            
-            Ok(ToolCallResult {
-                content: vec![ToolContent::Text {
-                    text: message,
-                }],
-                is_error: Some(true),
-            })
-        }
+        // Copy all files and subdirectories
+        copy_dir_recursive(&validated_source, &validated_destination, overwrite)
     } else {
         // File copy
-        match copy_file(&validated_source, &validated_destination, overwrite) {
-            Ok(bytes) => {
-                Ok(ToolCallResult {
-                    content: vec![ToolContent::Text {
-                        text: format!(
-                            "Successfully copied file '{}' to '{}'. Bytes copied: {}",
-                            source, destination, bytes
-                        ),
-                    }],
-                    is_error: Some(false),
-                })
-            }
-            Err(e) => {
-                Ok(ToolCallResult {
-                    content: vec![ToolContent::Text {
-                        text: format!("Failed to copy file: {}", e),
-                    }],
-                    is_error: Some(true),
-                })
-            }
-        }
+        copy_file(&validated_source, &validated_destination, overwrite)
     }
 }
 
 // Helper function to copy a single file
-fn copy_file(src: &Path, dest: &Path, overwrite: bool) -> Result<u64> {
-    // Check if destination exists
-    if dest.exists() && !overwrite {
-        return Err(anyhow!("Destination exists and overwrite is false"));
+fn copy_file(source: &Path, destination: &Path, overwrite: bool) -> Result<ToolCallResult> {
+    // Check if destination exists and is a file
+    if destination.exists() {
+        if destination.is_dir() {
+            // If destination is a directory, copy the file into it
+            let file_name = source.file_name().ok_or_else(|| {
+                anyhow!("Invalid source filename")
+            })?;
+            
+            let new_destination = destination.join(file_name);
+            return copy_file(source, &new_destination, overwrite);
+        } else if !overwrite {
+            // If destination exists and overwrite is false, return an error
+            return Ok(ToolCallResult {
+                content: vec![ToolContent::Text {
+                    text: format!(
+                        "Destination file already exists and overwrite is false: '{}'",
+                        destination.display()
+                    ),
+                }],
+                is_error: Some(true),
+            });
+        }
     }
     
-    // Copy options
-    let options = fs::copy(src, dest)?;
+    // Copy the file
+    match fs::copy(source, destination) {
+        Ok(bytes_copied) => {
+            Ok(ToolCallResult {
+                content: vec![ToolContent::Text {
+                    text: format!(
+                        "File copied successfully from '{}' to '{}'. Bytes copied: {}",
+                        source.display(), destination.display(), bytes_copied
+                    ),
+                }],
+                is_error: Some(false),
+            })
+        }
+        Err(e) => {
+            Ok(ToolCallResult {
+                content: vec![ToolContent::Text {
+                    text: format!("Failed to copy file: {}", e),
+                }],
+                is_error: Some(true),
+            })
+        }
+    }
+}
+
+// Helper function to recursively copy a directory
+fn copy_dir_recursive(source: &Path, destination: &Path, overwrite: bool) -> Result<ToolCallResult> {
+    // Keep track of total bytes copied
+    let mut total_bytes_copied: u64 = 0;
+    let mut files_copied = 0;
+    let mut errors = Vec::new();
     
-    Ok(options)
+    // Walk through all items in the source directory
+    for entry_result in WalkDir::new(source) {
+        let entry = match entry_result {
+            Ok(e) => e,
+            Err(e) => {
+                errors.push(format!("Error walking directory: {}", e));
+                continue;
+            }
+        };
+        
+        // Skip the root directory itself
+        if entry.path() == source {
+            continue;
+        }
+        
+        // Get the relative path from the source root
+        let relative_path = entry.path().strip_prefix(source).unwrap();
+        let target_path = destination.join(relative_path);
+        
+        if entry.file_type().is_dir() {
+            // Create directories if they don't exist
+            if !target_path.exists() {
+                match fs::create_dir_all(&target_path) {
+                    Ok(_) => debug!("Created directory: '{}'", target_path.display()),
+                    Err(e) => {
+                        errors.push(format!("Failed to create directory '{}': {}", 
+                                            target_path.display(), e));
+                    }
+                }
+            } else if !target_path.is_dir() {
+                errors.push(format!("Destination exists but is not a directory: '{}'", 
+                                     target_path.display()));
+            }
+        } else {
+            // Copy files
+            if target_path.exists() && !overwrite {
+                errors.push(format!("File already exists and overwrite is false: '{}'", 
+                                    target_path.display()));
+                continue;
+            }
+            
+            match fs::copy(entry.path(), &target_path) {
+                Ok(bytes) => {
+                    total_bytes_copied += bytes;
+                    files_copied += 1;
+                    debug!("Copied file: '{}' ({} bytes)", target_path.display(), bytes);
+                }
+                Err(e) => {
+                    errors.push(format!("Failed to copy file '{}': {}", 
+                                        target_path.display(), e));
+                }
+            }
+        }
+    }
+    
+    // Format response
+    let mut message = format!(
+        "Directory copied from '{}' to '{}'. Files copied: {}, total bytes: {}",
+        source.display(), destination.display(), files_copied, total_bytes_copied
+    );
+    
+    if !errors.is_empty() {
+        message.push_str("\n\nWarnings/Errors:");
+        for error in &errors {
+            message.push_str(&format!("\n- {}", error));
+        }
+    }
+    
+    Ok(ToolCallResult {
+        content: vec![ToolContent::Text {
+            text: message,
+        }],
+        is_error: Some(!errors.is_empty()),
+    })
 }

@@ -4,13 +4,12 @@ use serde_json::{json, Value};
 use std::{
     fs,
     path::Path,
-    os::unix::fs::MetadataExt,
-    os::unix::fs::PermissionsExt,
+    time::SystemTime,
 };
-use chrono::{DateTime, Utc};
 use tracing::debug;
+use chrono::{DateTime, Utc};
 
-use crate::utils::path::{validate_path, PathError};
+use crate::utils::path::{AllowedPaths, PathError};
 
 // Define the schema for the tool
 pub fn schema() -> Value {
@@ -19,7 +18,7 @@ pub fn schema() -> Value {
         "properties": {
             "path": {
                 "type": "string",
-                "description": "Path to get information for (relative to server root)"
+                "description": "Path to get information for (full path or relative to one of the allowed directories)"
             }
         },
         "required": ["path"]
@@ -27,42 +26,46 @@ pub fn schema() -> Value {
 }
 
 // Execute the info tool
-pub fn execute(args: &Value, server_root: &Path) -> Result<ToolCallResult> {
+pub fn execute(args: &Value, allowed_paths: &AllowedPaths) -> Result<ToolCallResult> {
     // Extract path parameter (required)
-    let path = args.get("path")
+    let path_str = args.get("path")
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow!("Missing path parameter"))?;
     
-    debug!("Getting info for: '{}'", path);
+    debug!("Getting info for path: '{}'", path_str);
+    
+    // Create Path object
+    let path = Path::new(path_str);
     
     // Validate the path
-    let validated_path = match validate_path(path, server_root) {
+    let validated_path = match allowed_paths.validate_path(path) {
         Ok(p) => p,
-        Err(PathError::OutsideRoot) => {
+        Err(e) => {
+            let error_message = match e {
+                PathError::OutsideAllowedPaths => 
+                    "Path is outside of all allowed directories".to_string(),
+                PathError::NotFound => 
+                    format!("Path not found: '{}'", path_str),
+                PathError::IoError(io_err) => 
+                    format!("IO error: {}", io_err),
+            };
+            
             return Ok(ToolCallResult {
-                content: vec![ToolContent::Text {
-                    text: "Path is outside of the allowed root directory".to_string(),
-                }],
-                is_error: Some(true),
-            });
-        }
-        Err(PathError::NotFound) => {
-            return Ok(ToolCallResult {
-                content: vec![ToolContent::Text {
-                    text: format!("Path not found: '{}'", path),
-                }],
-                is_error: Some(true),
-            });
-        }
-        Err(PathError::IoError(e)) => {
-            return Ok(ToolCallResult {
-                content: vec![ToolContent::Text {
-                    text: format!("IO error: {}", e),
-                }],
+                content: vec![ToolContent::Text { text: error_message }],
                 is_error: Some(true),
             });
         }
     };
+    
+    // Check if the path exists
+    if !validated_path.exists() {
+        return Ok(ToolCallResult {
+            content: vec![ToolContent::Text {
+                text: format!("Path does not exist: '{}'", path_str),
+            }],
+            is_error: Some(true),
+        });
+    }
     
     // Get metadata
     let metadata = match fs::metadata(&validated_path) {
@@ -77,7 +80,7 @@ pub fn execute(args: &Value, server_root: &Path) -> Result<ToolCallResult> {
         }
     };
     
-    // Determine file type
+    // Determine the file type
     let file_type = if metadata.is_dir() {
         "directory"
     } else if metadata.is_file() {
@@ -88,97 +91,74 @@ pub fn execute(args: &Value, server_root: &Path) -> Result<ToolCallResult> {
         "unknown"
     };
     
-    // Get file name
-    let name = validated_path.file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| path.to_string());
-    
-    // Get size (0 for directories)
-    let size = if metadata.is_file() {
-        metadata.len()
-    } else {
-        0
-    };
-    
-    // Get timestamps
-    let created = metadata.created().ok()
-        .map(|t| format_time(t));
-    
-    let modified = metadata.modified().ok()
-        .map(|t| format_time(t));
-    
-    let accessed = metadata.accessed().ok()
-        .map(|t| format_time(t));
-    
-    // Get permissions
-    let permissions = metadata.permissions();
-    let mode = permissions.mode();
-    
-    let readable = (mode & 0o400) != 0;
-    let writable = (mode & 0o200) != 0;
-    let executable = (mode & 0o100) != 0;
-    
-    // Check if hidden (starts with .)
-    let is_hidden = name.starts_with('.');
-    
-    // Format the output
-    let mut result = String::new();
-    
-    result.push_str(&format!("File Information: '{}'\n\n", path));
-    result.push_str(&format!("Name: {}\n", name));
-    result.push_str(&format!("Type: {}\n", file_type));
-    result.push_str(&format!("Size: {} bytes\n", size));
-    
-    if let Some(t) = created {
-        result.push_str(&format!("Created: {}\n", t));
-    }
-    
-    if let Some(t) = modified {
-        result.push_str(&format!("Modified: {}\n", t));
-    }
-    
-    if let Some(t) = accessed {
-        result.push_str(&format!("Accessed: {}\n", t));
-    }
-    
-    result.push_str("\nPermissions:\n");
-    result.push_str(&format!("  Readable: {}\n", readable));
-    result.push_str(&format!("  Writable: {}\n", writable));
-    result.push_str(&format!("  Executable: {}\n", executable));
-    result.push_str(&format!("  Mode: {:o}\n", mode & 0o777));
-    
-    result.push_str(&format!("\nHidden: {}\n", is_hidden));
-    
-    if metadata.is_dir() {
-        // Count entries for directories
-        match fs::read_dir(&validated_path) {
-            Ok(entries) => {
-                let count = entries.count();
-                result.push_str(&format!("Contents: {} items\n", count));
-            }
-            Err(e) => {
-                result.push_str(&format!("Error reading directory contents: {}\n", e));
+    // Extract the file name
+    let name = match validated_path.file_name() {
+        Some(name) => name.to_string_lossy().to_string(),
+        None => {
+            if validated_path.to_string_lossy().ends_with('/') || 
+               validated_path.to_string_lossy().ends_with('\\') {
+                // Root directory or directory with no name
+                ".".to_string()
+            } else {
+                // Some other path with no file name
+                path_str.to_string()
             }
         }
-    }
+    };
     
-    // Additional Unix-specific information
-    result.push_str("\nAdditional Info:\n");
-    result.push_str(&format!("  Device: {}\n", metadata.dev()));
-    result.push_str(&format!("  Inode: {}\n", metadata.ino()));
-    result.push_str(&format!("  User ID: {}\n", metadata.uid()));
-    result.push_str(&format!("  Group ID: {}\n", metadata.gid()));
+    // Format timestamps
+    let created_time = metadata.created().ok().and_then(|time| {
+        system_time_to_iso8601(time).ok()
+    });
+    
+    let modified_time = metadata.modified().ok().and_then(|time| {
+        system_time_to_iso8601(time).ok()
+    });
+    
+    let accessed_time = metadata.accessed().ok().and_then(|time| {
+        system_time_to_iso8601(time).ok()
+    });
+    
+    // Check permissions
+    let readable = metadata.permissions().readonly();
+    let writable = !metadata.permissions().readonly();
+    // Note: executable is platform-specific and might not be accurate on all systems
+    let executable = false;  // Default for simplicity
+    
+    // Check if the file is hidden
+    let is_hidden = name.starts_with('.');
+    
+    // Get relative path
+    let relative_path = allowed_paths.closest_relative_path(&validated_path);
+    
+    // Build the result
+    let result = json!({
+        "exists": true,
+        "type": file_type,
+        "name": name,
+        "path": relative_path,
+        "size": if metadata.is_file() { metadata.len() } else { 0 },
+        "created": created_time,
+        "modified": modified_time,
+        "accessed": accessed_time,
+        "permissions": {
+            "readable": readable,
+            "writable": writable,
+            "executable": executable
+        },
+        "is_hidden": is_hidden
+    });
     
     Ok(ToolCallResult {
         content: vec![ToolContent::Text {
-            text: result,
+            text: result.to_string(),
         }],
         is_error: Some(false),
     })
 }
 
-// Helper function to format timestamps
-fn format_time(time: std::time::SystemTime) -> String {
-    let datetime: DateTime<Utc> = time.into();
-    datetime.to_rfc3339()
+// Helper function to convert SystemTime to ISO 8601 format
+fn system_time_to_iso8601(time: SystemTime) -> Result<String> {
+    let datetime = DateTime::<Utc>::from(time);
+    Ok(datetime.to_rfc3339())
 }

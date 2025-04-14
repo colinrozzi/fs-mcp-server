@@ -7,7 +7,7 @@ use std::{
 };
 use tracing::debug;
 
-use crate::utils::path::{validate_path, PathError};
+use crate::utils::path::{AllowedPaths, PathError};
 
 // Define the schema for the tool
 pub fn schema() -> Value {
@@ -16,7 +16,7 @@ pub fn schema() -> Value {
         "properties": {
             "path": {
                 "type": "string",
-                "description": "Path to delete (relative to server root)"
+                "description": "Path to delete (full path or relative to one of the allowed directories)"
             },
             "recursive": {
                 "type": "boolean",
@@ -34,9 +34,9 @@ pub fn schema() -> Value {
 }
 
 // Execute the delete tool
-pub fn execute(args: &Value, server_root: &Path) -> Result<ToolCallResult> {
+pub fn execute(args: &Value, allowed_paths: &AllowedPaths) -> Result<ToolCallResult> {
     // Extract path parameter (required)
-    let path = args.get("path")
+    let path_str = args.get("path")
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow!("Missing path parameter"))?;
     
@@ -50,51 +50,46 @@ pub fn execute(args: &Value, server_root: &Path) -> Result<ToolCallResult> {
         .unwrap_or(false);
     
     debug!(
-        "Deleting: '{}', recursive: {}, force: {}",
-        path, recursive, force
+        "Deleting path: '{}', recursive: {}, force: {}",
+        path_str, recursive, force
     );
     
+    // Create Path object
+    let path = Path::new(path_str);
+    
     // Validate the path
-    let validated_path = match validate_path(path, server_root) {
+    let validated_path = match allowed_paths.validate_path(path) {
         Ok(p) => p,
-        Err(PathError::OutsideRoot) => {
+        Err(e) => {
+            let error_message = match e {
+                PathError::OutsideAllowedPaths => 
+                    "Path is outside of all allowed directories".to_string(),
+                PathError::NotFound => 
+                    format!("Path not found: '{}'", path_str),
+                PathError::IoError(io_err) => 
+                    format!("IO error: {}", io_err),
+            };
+            
             return Ok(ToolCallResult {
-                content: vec![ToolContent::Text {
-                    text: "Path is outside of the allowed root directory".to_string(),
-                }],
-                is_error: Some(true),
-            });
-        }
-        Err(PathError::NotFound) => {
-            // If force is true, ignore not found errors
-            if force {
-                return Ok(ToolCallResult {
-                    content: vec![ToolContent::Text {
-                        text: format!("Path not found: '{}' (ignored due to force flag)", path),
-                    }],
-                    is_error: Some(false),
-                });
-            } else {
-                return Ok(ToolCallResult {
-                    content: vec![ToolContent::Text {
-                        text: format!("Path not found: '{}'", path),
-                    }],
-                    is_error: Some(true),
-                });
-            }
-        }
-        Err(PathError::IoError(e)) => {
-            return Ok(ToolCallResult {
-                content: vec![ToolContent::Text {
-                    text: format!("IO error: {}", e),
-                }],
+                content: vec![ToolContent::Text { text: error_message }],
                 is_error: Some(true),
             });
         }
     };
     
-    // Check if it's a directory
+    // Check if the path exists
+    if !validated_path.exists() {
+        return Ok(ToolCallResult {
+            content: vec![ToolContent::Text {
+                text: format!("Path does not exist: '{}'", path_str),
+            }],
+            is_error: Some(true),
+        });
+    }
+    
+    // Determine if it's a file or directory
     let is_dir = validated_path.is_dir();
+    let relative_path = allowed_paths.closest_relative_path(&validated_path);
     
     // Delete the path
     let result = if is_dir {
@@ -110,47 +105,31 @@ pub fn execute(args: &Value, server_root: &Path) -> Result<ToolCallResult> {
     // Handle the result
     match result {
         Ok(_) => {
-            let type_str = if is_dir { "directory" } else { "file" };
-            
+            let item_type = if is_dir { "directory" } else { "file" };
             Ok(ToolCallResult {
                 content: vec![ToolContent::Text {
-                    text: format!("Successfully deleted {}: '{}'", type_str, path),
+                    text: format!("Deleted {}: '{}'", item_type, relative_path),
                 }],
                 is_error: Some(false),
             })
         }
         Err(e) => {
-            // If force is true, don't report errors as errors
+            // If force is enabled, return success with a warning
             if force {
+                let item_type = if is_dir { "directory" } else { "file" };
                 Ok(ToolCallResult {
                     content: vec![ToolContent::Text {
-                        text: format!(
-                            "Failed to delete '{}': {} (ignored due to force flag)",
-                            path, e
-                        ),
+                        text: format!("Deletion completed with warning: {} (path: '{}')", e, relative_path),
                     }],
                     is_error: Some(false),
                 })
             } else {
-                // For non-recursive deletion of non-empty directories, provide a more helpful message
-                if is_dir && !recursive && e.kind() == std::io::ErrorKind::DirectoryNotEmpty {
-                    Ok(ToolCallResult {
-                        content: vec![ToolContent::Text {
-                            text: format!(
-                                "Directory not empty: '{}'. Use recursive=true to delete non-empty directories.",
-                                path
-                            ),
-                        }],
-                        is_error: Some(true),
-                    })
-                } else {
-                    Ok(ToolCallResult {
-                        content: vec![ToolContent::Text {
-                            text: format!("Failed to delete '{}': {}", path, e),
-                        }],
-                        is_error: Some(true),
-                    })
-                }
+                Ok(ToolCallResult {
+                    content: vec![ToolContent::Text {
+                        text: format!("Failed to delete path: {}", e),
+                    }],
+                    is_error: Some(true),
+                })
             }
         }
     }

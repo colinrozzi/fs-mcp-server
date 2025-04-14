@@ -2,14 +2,14 @@ use anyhow::{anyhow, Result};
 use mcp_protocol::types::tool::{ToolCallResult, ToolContent};
 use serde_json::{json, Value};
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, OpenOptions},
     io::Write as IoWrite,
     path::{Path, PathBuf},
 };
 use tracing::{debug, warn};
 use base64;
 
-use crate::utils::path::{validate_path, PathError};
+use crate::utils::path::{AllowedPaths, PathError};
 
 // Define the schema for the tool
 pub fn schema() -> Value {
@@ -18,7 +18,7 @@ pub fn schema() -> Value {
         "properties": {
             "path": {
                 "type": "string",
-                "description": "Path to the file to write (relative to server root)"
+                "description": "Path to the file to write (full path or relative to one of the allowed directories)"
             },
             "content": {
                 "type": "string",
@@ -47,9 +47,9 @@ pub fn schema() -> Value {
 }
 
 // Execute the write tool
-pub fn execute(args: &Value, server_root: &Path) -> Result<ToolCallResult> {
+pub fn execute(args: &Value, allowed_paths: &AllowedPaths) -> Result<ToolCallResult> {
     // Extract required parameters
-    let path = args.get("path")
+    let path_str = args.get("path")
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow!("Missing path parameter"))?;
     
@@ -71,94 +71,16 @@ pub fn execute(args: &Value, server_root: &Path) -> Result<ToolCallResult> {
         .unwrap_or(false);
     
     debug!(
-        "Writing to file: '{}', encoding: '{}', mode: '{}', make_dirs: {}",
-        path, encoding, mode, make_dirs
+        "Writing to path: '{}', encoding: '{}', mode: '{}', make_dirs: {}",
+        path_str, encoding, mode, make_dirs
     );
     
-    // Validate the path
-    let validated_path = match validate_path(path, server_root) {
-        Ok(p) => p,
-        Err(PathError::OutsideRoot) => {
-            return Ok(ToolCallResult {
-                content: vec![ToolContent::Text {
-                    text: "Path is outside of the allowed root directory".to_string(),
-                }],
-                is_error: Some(true),
-            });
-        }
-        Err(PathError::NotFound) => {
-            // For write operations, NotFound is expected if creating a new file
-            // We still need to validate that its parent directory exists (or can be created)
-            match Path::new(path).parent() {
-                None => {
-                    return Ok(ToolCallResult {
-                        content: vec![ToolContent::Text {
-                            text: "Invalid path: no parent directory".to_string(),
-                        }],
-                        is_error: Some(true),
-                    });
-                }
-                Some(parent_path) => {
-                    let full_parent = server_root.join(parent_path);
-                    
-                    // Check if we need to create the parent directories
-                    if !full_parent.exists() {
-                        if make_dirs {
-                            if let Err(e) = fs::create_dir_all(&full_parent) {
-                                return Ok(ToolCallResult {
-                                    content: vec![ToolContent::Text {
-                                        text: format!("Failed to create parent directories: {}", e),
-                                    }],
-                                    is_error: Some(true),
-                                });
-                            }
-                        } else {
-                            return Ok(ToolCallResult {
-                                content: vec![ToolContent::Text {
-                                    text: format!("Parent directory doesn't exist: '{}'. Use make_dirs=true to create it.", parent_path.display()),
-                                }],
-                                is_error: Some(true),
-                            });
-                        }
-                    }
-                    
-                    // Use the full path for the write operation
-                    server_root.join(path)
-                }
-            }
-        }
-        Err(PathError::IoError(e)) => {
-            return Ok(ToolCallResult {
-                content: vec![ToolContent::Text {
-                    text: format!("IO error: {}", e),
-                }],
-                is_error: Some(true),
-            });
-        }
-    };
-    
-    // Handle different modes
-    let file_exists = validated_path.exists();
-    
-    if file_exists && mode == "create_new" {
-        return Ok(ToolCallResult {
-            content: vec![ToolContent::Text {
-                text: format!("File already exists: '{}'. Cannot create new.", path),
-            }],
-            is_error: Some(true),
-        });
-    }
-    
-    if !file_exists && mode == "append" {
-        debug!("File doesn't exist for append mode, creating new file");
-    }
-    
-    // Decode content based on encoding
-    let bytes = match encoding {
+    // Decode content if needed
+    let decoded_content = match encoding {
         "utf8" => content.as_bytes().to_vec(),
         "base64" => {
             match base64::decode(content) {
-                Ok(bytes) => bytes,
+                Ok(data) => data,
                 Err(e) => {
                     return Ok(ToolCallResult {
                         content: vec![ToolContent::Text {
@@ -168,7 +90,7 @@ pub fn execute(args: &Value, server_root: &Path) -> Result<ToolCallResult> {
                     });
                 }
             }
-        },
+        }
         _ => {
             return Ok(ToolCallResult {
                 content: vec![ToolContent::Text {
@@ -179,102 +101,173 @@ pub fn execute(args: &Value, server_root: &Path) -> Result<ToolCallResult> {
         }
     };
     
-    // Create or open the file with appropriate options
+    // Create Path object
+    let path = Path::new(path_str);
+    
+    // Validate the path
+    let validated_path = match allowed_paths.validate_path(path) {
+        Ok(p) => p,
+        Err(e) => {
+            match e {
+                PathError::OutsideAllowedPaths => {
+                    return Ok(ToolCallResult {
+                        content: vec![ToolContent::Text { 
+                            text: "Path is outside of all allowed directories".to_string() 
+                        }],
+                        is_error: Some(true),
+                    });
+                },
+                PathError::NotFound => {
+                    // For write operations, this might be OK if we're creating a new file
+                    // and make_dirs is true.
+                    if !make_dirs {
+                        return Ok(ToolCallResult {
+                            content: vec![ToolContent::Text { 
+                                text: format!("Path not found: '{}'", path_str) 
+                            }],
+                            is_error: Some(true),
+                        });
+                    } else {
+                        // Continue with the path we have
+                        path.to_path_buf()
+                    }
+                },
+                PathError::IoError(io_err) => {
+                    return Ok(ToolCallResult {
+                        content: vec![ToolContent::Text { 
+                            text: format!("IO error: {}", io_err) 
+                        }],
+                        is_error: Some(true),
+                    });
+                },
+            }
+        }
+    };
+    
+    // Create parent directories if needed
+    if make_dirs {
+        if let Some(parent) = validated_path.parent() {
+            if !parent.exists() {
+                match fs::create_dir_all(parent) {
+                    Ok(_) => {
+                        debug!("Created parent directories: '{}'", parent.display());
+                    }
+                    Err(e) => {
+                        return Ok(ToolCallResult {
+                            content: vec![ToolContent::Text {
+                                text: format!("Failed to create parent directories: {}", e),
+                            }],
+                            is_error: Some(true),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    
+    // Determine file open mode and handle existing files
     let file_result = match mode {
-        "create" | "create_new" => {
+        "create" => {
             OpenOptions::new()
                 .write(true)
                 .create(true)
-                .create_new(mode == "create_new")
                 .truncate(true)
                 .open(&validated_path)
-        },
+        }
         "overwrite" => {
             OpenOptions::new()
                 .write(true)
                 .create(true)
                 .truncate(true)
                 .open(&validated_path)
-        },
+        }
         "append" => {
             OpenOptions::new()
                 .write(true)
                 .create(true)
                 .append(true)
                 .open(&validated_path)
-        },
+        }
+        "create_new" => {
+            OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&validated_path)
+        }
         _ => {
             return Ok(ToolCallResult {
                 content: vec![ToolContent::Text {
-                    text: format!("Unsupported mode: '{}'", mode),
+                    text: format!("Invalid mode: '{}'", mode),
                 }],
                 is_error: Some(true),
             });
         }
     };
     
-    // Write to the file
+    // Handle file open result
     let mut file = match file_result {
-        Ok(file) => file,
+        Ok(f) => f,
         Err(e) => {
+            let error_msg = if mode == "create_new" && e.kind() == std::io::ErrorKind::AlreadyExists {
+                format!("File already exists: '{}' and mode is create_new", validated_path.display())
+            } else {
+                format!("Failed to open file: {}", e)
+            };
+            
             return Ok(ToolCallResult {
                 content: vec![ToolContent::Text {
-                    text: format!("Failed to open file for writing: {}", e),
+                    text: error_msg,
                 }],
                 is_error: Some(true),
             });
         }
     };
     
-    let write_result = file.write_all(&bytes);
-    
-    match write_result {
+    // Write content to file
+    match file.write_all(&decoded_content) {
         Ok(_) => {
-            // Flush to ensure data is written to disk
-            if let Err(e) = file.flush() {
-                warn!("Failed to flush file: {}", e);
-            }
-            
             // Get file metadata
-            match file.metadata() {
-                Ok(metadata) => {
-                    let size = metadata.len();
-                    
-                    // Success response
-                    let result_text = format!(
-                        "Successfully wrote {} bytes to '{}'.\nMode: {}\nEncoding: {}",
-                        bytes.len(),
-                        path,
-                        mode,
-                        encoding
-                    );
-                    
-                    Ok(ToolCallResult {
-                        content: vec![ToolContent::Text {
-                            text: result_text,
-                        }],
-                        is_error: Some(false),
-                    })
-                },
+            let metadata = match file.metadata() {
+                Ok(m) => m,
                 Err(e) => {
                     warn!("Failed to get file metadata: {}", e);
-                    
-                    // Still return success, just without size info
-                    Ok(ToolCallResult {
+                    return Ok(ToolCallResult {
                         content: vec![ToolContent::Text {
-                            text: format!(
-                                "Successfully wrote {} bytes to '{}'.\nMode: {}\nEncoding: {}",
-                                bytes.len(),
-                                path,
-                                mode,
-                                encoding
-                            ),
+                            text: format!("Content written successfully to '{}' but failed to get metadata: {}", 
+                                        validated_path.display(), e),
                         }],
                         is_error: Some(false),
-                    })
+                    });
                 }
-            }
-        },
+            };
+            
+            // Extract modified time if available
+            let modified_time = metadata.modified().ok().and_then(|time| {
+                chrono::DateTime::<chrono::Utc>::from(time)
+                    .to_rfc3339()
+                    .into()
+            });
+            
+            // Format success response
+            let relative_path = allowed_paths.closest_relative_path(&validated_path);
+            
+            let response = json!({
+                "success": true,
+                "path": relative_path,
+                "bytes_written": decoded_content.len(),
+                "metadata": {
+                    "size": metadata.len(),
+                    "modified": modified_time
+                }
+            });
+            
+            Ok(ToolCallResult {
+                content: vec![ToolContent::Text {
+                    text: response.to_string(),
+                }],
+                is_error: Some(false),
+            })
+        }
         Err(e) => {
             Ok(ToolCallResult {
                 content: vec![ToolContent::Text {
