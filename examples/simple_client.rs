@@ -2,6 +2,7 @@ use anyhow::Result;
 use mcp_client::{ClientBuilder, transport::StdioTransport};
 use serde_json::json;
 use std::env;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 #[tokio::main]
@@ -12,15 +13,33 @@ async fn main() -> Result<()> {
     
     println!("Starting server: {:?}", server_executable);
     
-    // Connect to the server - use the current directory as the root
+    // Set up multiple allowed directories for the server
+    let current_dir = env::current_dir()?;
+    let parent_dir = current_dir.parent().unwrap_or(&current_dir);
+    
+    // Create a vector of allowed directories
+    let allowed_dirs = vec![
+        current_dir.to_str().unwrap().to_string(),
+        parent_dir.to_str().unwrap().to_string(),
+    ];
+    
+    println!("Allowed directories:");
+    for (i, dir) in allowed_dirs.iter().enumerate() {
+        println!("  {}: {}", i + 1, dir);
+    }
+    
+    // Start the server with multiple allowed directories
+    let mut server_args = vec![
+        "--allowed-dirs".to_string(),
+        allowed_dirs.join(","),
+        "--log-level".to_string(),
+        "debug".to_string(),
+    ];
+    
+    // Connect to the server
     let (transport, mut receiver) = StdioTransport::new(
         server_executable.to_str().unwrap(),
-        vec![
-            "--root-dir".to_string(),
-            env::current_dir()?.to_str().unwrap().to_string(),
-            "--log-level".to_string(),
-            "debug".to_string(),
-        ],
+        server_args,
     );
     
     let client = Arc::new(ClientBuilder::new("simple-client", "0.1.0")
@@ -49,24 +68,38 @@ async fn main() -> Result<()> {
         println!("Tool: {} - {}", tool.name, tool.description.as_deref().unwrap_or(""));
     }
     
-    // Test list
+    // Test list from current directory
     println!("\nListing files in current directory...");
     let list_result = client.call_tool("list", &json!({
-        "path": ".",
+        "path": current_dir.to_str().unwrap(),
         "recursive": false
     })).await?;
     
     match &list_result.content[0] {
         mcp_protocol::types::tool::ToolContent::Text { text } => {
-            println!("List result:\n{}", text);
+            println!("List result (current dir):\n{}", text);
         },
         _ => println!("Unexpected content type"),
     }
     
-    // Test read on our Cargo.toml file
+    // Test list from parent directory
+    println!("\nListing files in parent directory...");
+    let list_result = client.call_tool("list", &json!({
+        "path": parent_dir.to_str().unwrap(),
+        "recursive": false
+    })).await?;
+    
+    match &list_result.content[0] {
+        mcp_protocol::types::tool::ToolContent::Text { text } => {
+            println!("List result (parent dir):\n{}", text);
+        },
+        _ => println!("Unexpected content type"),
+    }
+    
+    // Test read on Cargo.toml file
     println!("\nReading Cargo.toml file...");
     let read_result = client.call_tool("read", &json!({
-        "path": "Cargo.toml"
+        "path": current_dir.join("Cargo.toml").to_str().unwrap()
     })).await?;
     
     match &read_result.content[0] {
@@ -79,19 +112,20 @@ async fn main() -> Result<()> {
         _ => println!("Unexpected content type"),
     }
     
-    // Test search
-    println!("\nSearching for 'execute' in src directory...");
+    // Test search across both directories
+    println!("\nSearching for 'allowed_dirs' across both directories...");
     let search_result = client.call_tool("search", &json!({
-        "root_path": "src",
-        "pattern": "execute",
-        "recursive": true
+        "root_path": current_dir.to_str().unwrap(),
+        "pattern": "allowed_dirs",
+        "recursive": true,
+        "max_results": 5
     })).await?;
     
     match &search_result.content[0] {
         mcp_protocol::types::tool::ToolContent::Text { text } => {
-            // Only show the first 200 characters to avoid flooding the console
-            let preview: String = text.chars().take(200).collect();
-            println!("Search result (first 200 chars):\n{}", preview);
+            // Show the first 400 characters of the search results
+            let preview: String = text.chars().take(400).collect();
+            println!("Search result (first 400 chars):\n{}", preview);
             println!("... (results truncated)");
         },
         _ => println!("Unexpected content type"),

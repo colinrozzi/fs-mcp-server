@@ -20,11 +20,11 @@ The server provides the following MCP tools:
 8. **info**: Get detailed file/directory information
 9. **search**: Search file contents (grep-like functionality)
 
-All operations are constrained to a configurable root directory for security.
+All operations are constrained to configurable allowed directories for security.
 
 ## Security
 
-All filesystem operations are constrained to a configurable root directory. The server validates paths to prevent directory traversal attacks and other security issues. Operations that would access files outside the root directory are rejected with appropriate error messages.
+All filesystem operations are constrained to a set of configurable allowed directories. The server validates paths to prevent directory traversal attacks and other security issues. Operations that would access files outside the allowed directories are rejected with appropriate error messages.
 
 ## Installation
 
@@ -43,21 +43,36 @@ cargo build --release
 ### Running the Server
 
 ```bash
-# Run with current directory as root
+# Run with current directory as the allowed directory
 ./target/release/fs-mcp-server
 
-# Specify a root directory
-./target/release/fs-mcp-server --root-dir /path/to/root
+# Specify allowed directories (comma-separated)
+./target/release/fs-mcp-server --allowed-dirs /path/to/dir1,/path/to/dir2
+
+# Use a configuration file listing allowed directories
+./target/release/fs-mcp-server --config-file /path/to/config.txt
 
 # Set maximum file size
 ./target/release/fs-mcp-server --max-file-size 5242880  # 5MB
+```
+
+### Configuration File
+
+You can specify allowed directories in a configuration file with one directory per line:
+
+```
+# This is a comment
+/path/to/directory1
+/path/to/directory2
+/another/path
 ```
 
 ### Environment Variables
 
 The server can be configured using the following environment variables:
 
-- `FS_SERVER_ROOT`: Root directory for filesystem operations
+- `FS_ALLOWED_DIRS`: Comma-separated list of allowed directories for filesystem operations
+- `FS_CONFIG_FILE`: Path to a configuration file listing allowed directories
 - `FS_MAX_FILE_SIZE`: Maximum file size for read operations (in bytes)
 - `FS_REQUEST_TIMEOUT`: Request timeout in seconds
 - `FS_LOG_LEVEL`: Log level (error, warn, info, debug, trace)
@@ -66,7 +81,7 @@ The server can be configured using the following environment variables:
 Example:
 
 ```bash
-FS_SERVER_ROOT=/data FS_LOG_LEVEL=debug ./target/release/fs-mcp-server
+FS_ALLOWED_DIRS=/data,/home/user/docs FS_LOG_LEVEL=debug ./target/release/fs-mcp-server
 ```
 
 ### Protocol Tools
@@ -78,7 +93,7 @@ The server provides the following MCP tools:
 Lists files and directories at a specified path.
 
 Parameters:
-- `path`: Path to list files from (relative to server root)
+- `path`: Path to list files from (full path or relative to one of the allowed directories)
 - `pattern`: Optional glob pattern to filter files (default: "*")
 - `recursive`: Whether to list files recursively (default: false)
 - `include_hidden`: Whether to include hidden files (default: false)
@@ -89,7 +104,7 @@ Parameters:
 Reads file contents with support for different encodings and partial reads.
 
 Parameters:
-- `path`: Path to the file to read (relative to server root)
+- `path`: Path to the file to read (full path or relative to one of the allowed directories)
 - `encoding`: File encoding (utf8, base64, binary) (default: utf8)
 - `start_line`: Start line for partial read (0-indexed)
 - `end_line`: End line for partial read (inclusive)
@@ -100,7 +115,7 @@ Parameters:
 Searches file contents for matching patterns (grep-like functionality).
 
 Parameters:
-- `root_path`: Root directory to start the search from (relative to server root)
+- `root_path`: Root directory to start the search from (full path or relative to one of the allowed directories)
 - `pattern`: Text pattern to search for in files
 - `regex`: Whether to treat pattern as regex (default: false)
 - `file_pattern`: Optional glob pattern to filter which files to search (default: "*")
@@ -152,17 +167,16 @@ async fn main() -> Result<()> {
     println!("Connected to: {} v{}", init_result.server_info.name, init_result.server_info.version);
     
     // List files in a directory
-    let list_result = client.call_tool("fs.list", &json!({
-        "path": ".",
-        "recursive": false
+    let list_result = client.call_tool("list", &json!({
+        "path": "/path/to/directory"
     })).await?;
     
     // Process result
     println!("List result: {:?}", list_result);
     
     // Search for a pattern in files
-    let search_result = client.call_tool("fs.search", &json!({
-        "root_path": "src",
+    let search_result = client.call_tool("search", &json!({
+        "root_path": "/path/to/src",
         "pattern": "TODO",
         "file_pattern": "*.rs"
     })).await?;

@@ -9,13 +9,13 @@ use std::{
     fmt::Write as _,
     fs::File,
     io::{BufRead, BufReader, Read},
-    path::Path,
+    path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 use tracing::{debug, error, warn};
 use walkdir::{DirEntry, WalkDir};
 
-use crate::utils::path::{validate_path, PathError};
+use crate::utils::path::{AllowedPaths, is_text_file, PathError};
 
 // Struct representing a search match
 #[derive(Debug, Serialize, Deserialize)]
@@ -49,306 +49,6 @@ struct SearchResults {
     matches: Vec<FileMatch>,
 }
 
-// Struct for representing search parameters
-#[derive(Debug, Deserialize)]
-struct SearchParams {
-    root_path: String,
-    pattern: String,
-    #[serde(default = "default_file_pattern")]
-    file_pattern: String,
-    #[serde(default = "default_true")]
-    recursive: bool,
-    #[serde(default = "default_false")]
-    case_sensitive: bool,
-    #[serde(default = "default_false")]
-    regex: bool,
-    #[serde(default = "default_max_results")]
-    max_results: usize,
-    #[serde(default = "default_max_file_size")]
-    max_file_size: u64,
-    #[serde(default = "default_zero")]
-    context_lines: usize,
-    #[serde(default = "default_timeout")]
-    timeout_secs: u64,
-}
-
-// Default values for optional parameters
-fn default_file_pattern() -> String {
-    "*".to_string()
-}
-
-fn default_true() -> bool {
-    true
-}
-
-fn default_false() -> bool {
-    false
-}
-
-fn default_zero() -> usize {
-    0
-}
-
-fn default_max_results() -> usize {
-    100
-}
-
-fn default_max_file_size() -> u64 {
-    10 * 1024 * 1024 // 10MB
-}
-
-fn default_timeout() -> u64 {
-    30 // 30 seconds
-}
-
-// Check if a file is likely binary based on content sampling
-fn is_likely_binary(path: &Path, max_check_size: usize) -> Result<bool> {
-    let mut file = File::open(path)?;
-    let mut buffer = vec![0; max_check_size.min(8192)]; // Check at most 8KB
-    let bytes_read = file.read(&mut buffer)?;
-    buffer.truncate(bytes_read);
-
-    // Check for null bytes and other binary indicators
-    Ok(buffer.iter().take(bytes_read).any(|&b| b == 0))
-}
-
-// Extract context lines around a match
-fn extract_context(
-    lines: &[String],
-    line_idx: usize,
-    context_lines: usize,
-) -> Vec<Context> {
-    if context_lines == 0 {
-        return Vec::new();
-    }
-
-    let start = line_idx.saturating_sub(context_lines);
-    let end = (line_idx + context_lines).min(lines.len() - 1);
-    
-    let mut context = Vec::with_capacity((end - start + 1).saturating_sub(1));
-    
-    // Add lines before the match
-    for i in start..line_idx {
-        context.push(Context {
-            line_number: i + 1,
-            content: lines[i].clone(),
-        });
-    }
-    
-    // Add lines after the match
-    for i in (line_idx + 1)..=end {
-        context.push(Context {
-            line_number: i + 1,
-            content: lines[i].clone(),
-        });
-    }
-    
-    context
-}
-
-// Check if an entry should be processed based on file pattern and size
-fn should_process_entry(
-    entry: &DirEntry,
-    file_pattern: &Pattern,
-    max_file_size: u64,
-) -> Result<bool> {
-    let path = entry.path();
-    
-    // Skip directories
-    if !entry.file_type().is_file() {
-        return Ok(false);
-    }
-
-    // Check if file name matches pattern
-    let file_name = path.file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("");
-    
-    if !file_pattern.matches(file_name) {
-        return Ok(false);
-    }
-    
-    // Check file size
-    match entry.metadata() {
-        Ok(metadata) => {
-            if metadata.len() > max_file_size {
-                debug!("Skipping large file {}: {} bytes", path.display(), metadata.len());
-                return Ok(false);
-            }
-        }
-        Err(err) => {
-            warn!("Could not get metadata for {}: {}", path.display(), err);
-            return Ok(false);
-        }
-    }
-    
-    // Check if it's a binary file
-    match is_likely_binary(path, 4096) {
-        Ok(true) => {
-            debug!("Skipping binary file: {}", path.display());
-            return Ok(false);
-        }
-        Ok(false) => Ok(true),
-        Err(err) => {
-            warn!("Error checking if file is binary {}: {}", path.display(), err);
-            Ok(false)
-        }
-    }
-}
-
-// Process a single file looking for matches
-fn process_file(
-    path: &Path,
-    regex: &Regex,
-    context_lines: usize,
-    server_root: &Path,
-) -> Result<Option<FileMatch>> {
-    let file = match File::open(path) {
-        Ok(file) => file,
-        Err(err) => {
-            warn!("Could not open file {}: {}", path.display(), err);
-            return Ok(None);
-        }
-    };
-    
-    // Use a decoder that handles various text encodings
-    let decoder = DecodeReaderBytesBuilder::new()
-        .encoding(None)
-        .utf8_passthru(true)
-        .build(file);
-    
-    let reader = BufReader::new(decoder);
-    let lines: Vec<String> = reader.lines()
-        .filter_map(Result::ok)
-        .collect();
-    
-    let mut file_matches = Vec::new();
-    
-    for (line_idx, line) in lines.iter().enumerate() {
-        if regex.is_match(line) {
-            let context = extract_context(&lines, line_idx, context_lines);
-            
-            file_matches.push(Match {
-                line_number: line_idx + 1,
-                line: line.clone(),
-                context,
-            });
-        }
-    }
-    
-    if file_matches.is_empty() {
-        return Ok(None);
-    }
-    
-    // Convert absolute path to path relative to server root
-    let relative_path = match path.strip_prefix(server_root) {
-        Ok(rel_path) => rel_path.to_string_lossy().into_owned(),
-        Err(_) => path.to_string_lossy().into_owned(),
-    };
-    
-    Ok(Some(FileMatch {
-        file: relative_path,
-        matches: file_matches,
-    }))
-}
-
-// Main search function - simplified to avoid async/await complications for now
-fn search_files(
-    params: &SearchParams,
-    server_root: &Path,
-) -> Result<SearchResults> {
-    // Validate the path
-    let root_path = match validate_path(&params.root_path, server_root) {
-        Ok(path) => path,
-        Err(PathError::OutsideRoot) => {
-            return Err(anyhow!("Path is outside of the allowed root directory"));
-        }
-        Err(PathError::NotFound) => {
-            return Err(anyhow!("The specified path does not exist"));
-        }
-        Err(PathError::IoError(err)) => {
-            return Err(anyhow!("IO error: {}", err));
-        }
-    };
-    
-    // Prepare regex for searching
-    let regex = if params.regex {
-        RegexBuilder::new(&params.pattern)
-            .case_insensitive(!params.case_sensitive)
-            .build()
-            .map_err(|e| anyhow!("Invalid regex pattern: {}", e))?
-    } else {
-        RegexBuilder::new(&regex::escape(&params.pattern))
-            .case_insensitive(!params.case_sensitive)
-            .build()
-            .map_err(|e| anyhow!("Invalid regex pattern: {}", e))?
-    };
-    
-    // Prepare file pattern
-    let file_pattern = Pattern::new(&params.file_pattern)
-        .map_err(|e| anyhow!("Invalid file pattern: {}", e))?;
-    
-    // Setup timeout
-    let timeout = Duration::from_secs(params.timeout_secs);
-    let start_time = Instant::now();
-    
-    // Start directory traversal
-    let walker = WalkDir::new(root_path)
-        .follow_links(false)
-        .max_depth(if params.recursive { usize::MAX } else { 1 })
-        .into_iter();
-    
-    let mut files_searched = 0;
-    let mut all_matches = Vec::new();
-    let mut total_matches = 0;
-    
-    // Process files directly without async workers for now
-    for entry in walker.filter_map(Result::ok) {
-        // Check if we've exceeded the timeout
-        if start_time.elapsed() > timeout {
-            warn!("Search operation timed out after {} seconds", params.timeout_secs);
-            break;
-        }
-        
-        match should_process_entry(&entry, &file_pattern, params.max_file_size) {
-            Ok(true) => {
-                files_searched += 1;
-                
-                // Process the file
-                match process_file(entry.path(), &regex, params.context_lines, server_root) {
-                    Ok(Some(file_match)) => {
-                        total_matches += file_match.matches.len();
-                        all_matches.push(file_match);
-                        
-                        // Check if we've reached the maximum number of results
-                        if total_matches >= params.max_results {
-                            break;
-                        }
-                    }
-                    Ok(None) => {}
-                    Err(err) => {
-                        error!("Error processing file {}: {}", entry.path().display(), err);
-                    }
-                }
-            }
-            Ok(false) => {} // Skip this file
-            Err(e) => {
-                warn!("Error processing entry {}: {}", entry.path().display(), e);
-            }
-        }
-    }
-    
-    // Sort results by file path for consistent output
-    all_matches.sort_by(|a, b| a.file.cmp(&b.file));
-    
-    Ok(SearchResults {
-        total_matches,
-        files_searched,
-        files_matched: all_matches.len(),
-        matches: all_matches,
-    })
-}
-
 // Define the schema for the tool
 pub fn schema() -> Value {
     json!({
@@ -356,7 +56,7 @@ pub fn schema() -> Value {
         "properties": {
             "root_path": {
                 "type": "string",
-                "description": "Root directory to start the search from (relative to server root)"
+                "description": "Root directory to start the search from (full path or relative to one of the allowed directories)"
             },
             "pattern": {
                 "type": "string",
@@ -407,81 +107,344 @@ pub fn schema() -> Value {
     })
 }
 
-// Execute the search tool - simplified to sync version
-pub fn execute(args: &Value, server_root: &Path) -> Result<ToolCallResult> {
-    // Parse arguments
-    let params: SearchParams = match serde_json::from_value(args.clone()) {
-        Ok(params) => params,
+// Execute the search tool
+pub fn execute(args: &Value, allowed_paths: &AllowedPaths) -> Result<ToolCallResult> {
+    // Extract required parameters
+    let root_path_str = args.get("root_path")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("Missing root_path parameter"))?;
+    
+    let pattern = args.get("pattern")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("Missing pattern parameter"))?;
+    
+    // Extract optional parameters
+    let is_regex = args.get("regex")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    
+    let file_pattern = args.get("file_pattern")
+        .and_then(|v| v.as_str())
+        .unwrap_or("*");
+    
+    let recursive = args.get("recursive")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    
+    let case_sensitive = args.get("case_sensitive")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    
+    let max_results = args.get("max_results")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(100) as usize;
+    
+    let max_file_size = args.get("max_file_size")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(10 * 1024 * 1024); // 10MB by default
+    
+    let context_lines = args.get("context_lines")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as usize;
+    
+    let timeout_secs = args.get("timeout_secs")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(30) as u64;
+    
+    debug!(
+        "Searching for '{}' in path '{}', recursive: {}, pattern: {}",
+        pattern, root_path_str, recursive, file_pattern
+    );
+    
+    // Create Path object
+    let root_path = Path::new(root_path_str);
+    
+    // Validate the root path
+    let validated_path = match allowed_paths.validate_path(root_path) {
+        Ok(p) => p,
+        Err(e) => {
+            let error_message = match e {
+                PathError::OutsideAllowedPaths => 
+                    "Root path is outside of all allowed directories".to_string(),
+                PathError::NotFound => 
+                    format!("Root path not found: '{}'", root_path_str),
+                PathError::IoError(io_err) => 
+                    format!("IO error: {}", io_err),
+            };
+            
+            return Ok(ToolCallResult {
+                content: vec![ToolContent::Text { text: error_message }],
+                is_error: Some(true),
+            });
+        }
+    };
+    
+    // Check if the path is a directory
+    if !validated_path.is_dir() {
+        return Ok(ToolCallResult {
+            content: vec![ToolContent::Text {
+                text: format!("Path is not a directory: '{}'", root_path_str),
+            }],
+            is_error: Some(true),
+        });
+    }
+    
+    // Create a glob pattern
+    let glob_pattern = match Pattern::new(file_pattern) {
+        Ok(p) => p,
         Err(e) => {
             return Ok(ToolCallResult {
                 content: vec![ToolContent::Text {
-                    text: format!("Invalid parameters: {}", e),
+                    text: format!("Invalid file pattern: {}", e),
                 }],
                 is_error: Some(true),
             });
         }
     };
-
-    debug!(
-        "Searching for '{}' in '{}', recursive: {}, case_sensitive: {}, regex: {}",
-        params.pattern, params.root_path, params.recursive, params.case_sensitive, params.regex
-    );
-
-    // Perform the search
-    match search_files(&params, server_root) {
-        Ok(results) => {
-            // Format results
-            if results.total_matches == 0 {
-                return Ok(ToolCallResult {
-                    content: vec![ToolContent::Text {
-                        text: format!(
-                            "No matches found for pattern '{}' in '{}'.\nSearched {} files.",
-                            params.pattern, params.root_path, results.files_searched
-                        ),
-                    }],
-                    is_error: Some(false),
-                });
+    
+    // Compile the search pattern (regex or literal)
+    let regex = if is_regex {
+        match RegexBuilder::new(pattern)
+            .case_insensitive(!case_sensitive)
+            .build() {
+                Ok(r) => r,
+                Err(e) => {
+                    return Ok(ToolCallResult {
+                        content: vec![ToolContent::Text {
+                            text: format!("Invalid regex pattern: {}", e),
+                        }],
+                        is_error: Some(true),
+                    });
+                }
             }
-
-            // Format as text result
-            let mut text = format!(
-                "Found {} matches in {} files (searched {} total):\n\n",
-                results.total_matches, results.files_matched, results.files_searched
-            );
-
-            for file_match in results.matches {
-                writeln!(&mut text, "File: {}", file_match.file)?;
-                
-                for m in file_match.matches {
-                    writeln!(&mut text, "  Line {}: {}", m.line_number, m.line.trim())?;
+    } else {
+        // Escape special characters for literal search
+        let escaped_pattern = regex::escape(pattern);
+        match RegexBuilder::new(&escaped_pattern)
+            .case_insensitive(!case_sensitive)
+            .build() {
+                Ok(r) => r,
+                Err(e) => {
+                    return Ok(ToolCallResult {
+                        content: vec![ToolContent::Text {
+                            text: format!("Failed to create search pattern: {}", e),
+                        }],
+                        is_error: Some(true),
+                    });
+                }
+            }
+    };
+    
+    // Initialize search state
+    let start_time = Instant::now();
+    let timeout = Duration::from_secs(timeout_secs);
+    
+    let mut results = SearchResults {
+        total_matches: 0,
+        files_searched: 0,
+        files_matched: 0,
+        matches: Vec::new(),
+    };
+    
+    // Walk the directory
+    let walker = WalkDir::new(&validated_path)
+        .max_depth(if recursive { usize::MAX } else { 1 })
+        .follow_links(false)
+        .into_iter();
+    
+    'outer: for entry_result in walker.filter_entry(|e| should_process_entry(e, &glob_pattern)) {
+        // Check timeout
+        if start_time.elapsed() > timeout {
+            debug!("Search timed out after {} seconds", timeout_secs);
+            break;
+        }
+        
+        // Skip errors
+        let entry = match entry_result {
+            Ok(e) => e,
+            Err(e) => {
+                warn!("Error walking directory: {}", e);
+                continue;
+            }
+        };
+        
+        // Skip directories
+        if entry.file_type().is_dir() {
+            continue;
+        }
+        
+        // Get file path relative to allowed directories
+        let file_path = allowed_paths.closest_relative_path(entry.path());
+        
+        // Process file
+        results.files_searched += 1;
+        
+        // Skip files that are too large
+        if let Ok(metadata) = entry.metadata() {
+            if metadata.len() > max_file_size {
+                debug!("Skipping large file: {}", file_path);
+                continue;
+            }
+        }
+        
+        // Only search text files
+        if let Ok(is_text) = is_text_file(entry.path()) {
+            if !is_text {
+                debug!("Skipping binary file: {}", file_path);
+                continue;
+            }
+        } else {
+            debug!("Skipping file (failed to determine if text): {}", file_path);
+            continue;
+        }
+        
+        // Search file
+        match search_file(entry.path(), &regex, context_lines) {
+            Ok(file_matches) => {
+                if !file_matches.is_empty() {
+                    results.files_matched += 1;
+                    results.total_matches += file_matches.len();
                     
-                    if !m.context.is_empty() {
-                        for ctx in m.context {
-                            writeln!(
-                                &mut text,
-                                "    {} | {}", 
-                                ctx.line_number,
-                                ctx.content.trim()
-                            )?;
-                        }
-                        writeln!(&mut text)?;
+                    // Add to results
+                    results.matches.push(FileMatch {
+                        file: file_path,
+                        matches: file_matches,
+                    });
+                    
+                    // Check if we've reached the maximum results
+                    if results.total_matches >= max_results {
+                        debug!("Reached maximum number of results ({})", max_results);
+                        break 'outer;
                     }
                 }
-                writeln!(&mut text)?;
             }
-
-            return Ok(ToolCallResult {
-                content: vec![ToolContent::Text { text }],
-                is_error: Some(false),
-            });
+            Err(e) => {
+                warn!("Error searching file {}: {}", file_path, e);
+            }
         }
-        Err(e) => {
-            return Ok(ToolCallResult {
-                content: vec![ToolContent::Text {
-                    text: format!("Search error: {}", e),
-                }],
-                is_error: Some(true),
+    }
+    
+    // Format result text
+    let elapsed = start_time.elapsed();
+    let mut text = format!(
+        "Search results for '{}' in '{}'\n",
+        pattern, root_path_str
+    );
+    writeln!(&mut text, "Results: {}/{} matches in {}/{} files", 
+             results.total_matches, 
+             results.files_matched,
+             results.files_matched,
+             results.files_searched)?;
+    writeln!(&mut text, "Time: {:.2} seconds", elapsed.as_secs_f64())?;
+    
+    if results.total_matches > 0 {
+        writeln!(&mut text, "\nMatches:")?;
+        
+        for file_match in &results.matches {
+            writeln!(&mut text, "\nFile: {}", file_match.file)?;
+            
+            for m in &file_match.matches {
+                writeln!(&mut text, "  Line {}: {}", m.line_number, m.line.trim())?;
+                
+                if !m.context.is_empty() {
+                    for ctx in &m.context {
+                        if ctx.line_number != m.line_number {
+                            writeln!(&mut text, "    Line {}: {}", ctx.line_number, ctx.content.trim())?;
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        writeln!(&mut text, "\nNo matches found.")?;
+    }
+    
+    if results.total_matches >= max_results {
+        writeln!(&mut text, "\nNote: Maximum result limit reached ({}).", max_results)?;
+    }
+    
+    if elapsed > timeout {
+        writeln!(&mut text, "\nNote: Search timed out after {} seconds.", timeout_secs)?;
+    }
+    
+    Ok(ToolCallResult {
+        content: vec![ToolContent::Text {
+            text,
+        }],
+        is_error: Some(false),
+    })
+}
+
+// Determine if an entry should be processed (directory or matching file)
+fn should_process_entry(entry: &DirEntry, pattern: &Pattern) -> bool {
+    // Always process directories
+    if entry.file_type().is_dir() {
+        return true;
+    }
+    
+    // Skip hidden files
+    let file_name = entry.file_name().to_string_lossy();
+    if file_name.starts_with('.') {
+        return false;
+    }
+    
+    // Check if the file matches the pattern
+    pattern.matches(&file_name)
+}
+
+// Search a file for the specified pattern
+fn search_file(path: &Path, regex: &Regex, context_lines: usize) -> Result<Vec<Match>> {
+    let file = File::open(path)?;
+    
+    // Use a decoder that handles common text encodings
+    let reader = DecodeReaderBytesBuilder::new()
+        .encoding(None) // Try to detect encoding
+        .utf8_passthru(true)
+        .build(BufReader::new(file));
+    
+    let buffered = BufReader::new(reader);
+    
+    // Read file line by line
+    let mut matches = Vec::new();
+    let mut lines = Vec::new();
+    
+    // Read all lines first for context lookups
+    for line_result in buffered.lines() {
+        let line = line_result?;
+        lines.push(line);
+    }
+    
+    // Process lines
+    for (line_num, line) in lines.iter().enumerate() {
+        if regex.is_match(line) {
+            // Create match with context
+            let mut match_context = Vec::new();
+            
+            // Add context before match
+            let start_context = if line_num > context_lines { line_num - context_lines } else { 0 };
+            for i in start_context..line_num {
+                match_context.push(Context {
+                    line_number: i + 1,
+                    content: lines[i].clone(),
+                });
+            }
+            
+            // Add context after match
+            let end_context = std::cmp::min(line_num + context_lines + 1, lines.len());
+            for i in line_num+1..end_context {
+                match_context.push(Context {
+                    line_number: i + 1,
+                    content: lines[i].clone(),
+                });
+            }
+            
+            matches.push(Match {
+                line_number: line_num + 1,
+                line: line.clone(),
+                context: match_context,
             });
         }
     }
+    
+    Ok(matches)
 }

@@ -10,7 +10,7 @@ use std::{
 use tracing::{debug, warn};
 use base64;
 
-use crate::utils::path::{is_text_file, validate_path, PathError};
+use crate::utils::path::{AllowedPaths, is_text_file, PathError};
 
 // Struct representing file metadata
 #[derive(Debug, Serialize, Deserialize)]
@@ -27,7 +27,7 @@ pub fn schema() -> Value {
         "properties": {
             "path": {
                 "type": "string",
-                "description": "Path to the file to read (relative to server root)"
+                "description": "Path to the file to read (full path or relative to one of the allowed directories)"
             },
             "encoding": {
                 "type": "string",
@@ -54,9 +54,9 @@ pub fn schema() -> Value {
 }
 
 // Execute the read tool
-pub fn execute(args: &Value, server_root: &Path, max_file_size: u64) -> Result<ToolCallResult> {
+pub fn execute(args: &Value, allowed_paths: &AllowedPaths, max_file_size: u64) -> Result<ToolCallResult> {
     // Extract path parameter (required)
-    let path = args.get("path")
+    let path_str = args.get("path")
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow!("Missing path parameter"))?;
     
@@ -82,33 +82,27 @@ pub fn execute(args: &Value, server_root: &Path, max_file_size: u64) -> Result<T
     
     debug!(
         "Reading file: '{}', encoding: '{}', start_line: {:?}, end_line: {:?}, max_size: {}",
-        path, encoding, start_line, end_line, max_size
+        path_str, encoding, start_line, end_line, max_size
     );
     
+    // Create Path object
+    let path = Path::new(path_str);
+    
     // Validate the path
-    let validated_path = match validate_path(path, server_root) {
+    let validated_path = match allowed_paths.validate_path(path) {
         Ok(p) => p,
-        Err(PathError::OutsideRoot) => {
+        Err(e) => {
+            let error_message = match e {
+                PathError::OutsideAllowedPaths => 
+                    "Path is outside of all allowed directories".to_string(),
+                PathError::NotFound => 
+                    format!("File not found: '{}'", path_str),
+                PathError::IoError(io_err) => 
+                    format!("IO error: {}", io_err),
+            };
+            
             return Ok(ToolCallResult {
-                content: vec![ToolContent::Text {
-                    text: "Path is outside of the allowed root directory".to_string(),
-                }],
-                is_error: Some(true),
-            });
-        }
-        Err(PathError::NotFound) => {
-            return Ok(ToolCallResult {
-                content: vec![ToolContent::Text {
-                    text: format!("File not found: '{}'", path),
-                }],
-                is_error: Some(true),
-            });
-        }
-        Err(PathError::IoError(e)) => {
-            return Ok(ToolCallResult {
-                content: vec![ToolContent::Text {
-                    text: format!("IO error: {}", e),
-                }],
+                content: vec![ToolContent::Text { text: error_message }],
                 is_error: Some(true),
             });
         }
@@ -118,7 +112,7 @@ pub fn execute(args: &Value, server_root: &Path, max_file_size: u64) -> Result<T
     if !validated_path.is_file() {
         return Ok(ToolCallResult {
             content: vec![ToolContent::Text {
-                text: format!("Path is not a file: '{}'", path),
+                text: format!("Path is not a file: '{}'", path_str),
             }],
             is_error: Some(true),
         });
@@ -173,7 +167,7 @@ pub fn execute(args: &Value, server_root: &Path, max_file_size: u64) -> Result<T
     
     // Prepare metadata structure
     let file_metadata = FileMetadata {
-        path: path.to_string(),
+        path: path_str.to_string(),
         modified: modified_time,
         size: file_size,
     };

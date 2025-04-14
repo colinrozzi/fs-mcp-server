@@ -14,18 +14,19 @@ The Filesystem MCP Server is a Model Context Protocol (MCP) implementation that 
 
 ### Path Validation
 
-All operations are constrained to a configurable root directory. The server will:
+All operations are constrained to a configurable set of allowed directories. The server will:
 
 1. Canonicalize all paths to resolve symlinks and relative paths
-2. Validate that the resulting path is contained within the designated root directory
-3. Reject any attempts to access paths outside the root with appropriate error messages
+2. Validate that the resulting path is contained within at least one of the designated allowed directories
+3. Reject any attempts to access paths outside the allowed directories with appropriate error messages
 
 ### Configuration
 
-The root directory can be specified through:
-- Environment variable: `FS_SERVER_ROOT`
-- Command-line argument: `--root-dir <path>`
-- Default: Current working directory if neither is specified
+The allowed directories can be specified through:
+- Environment variable: `FS_ALLOWED_DIRS` (comma-separated list)
+- Command-line argument: `--allowed-dirs <paths>` (comma-separated list)
+- Configuration file: `--config-file <path>` (one directory per line)
+- Default: Current working directory if none of the above is specified
 
 ## Tools
 
@@ -42,7 +43,7 @@ Lists files and directories at a specified path.
   "properties": {
     "path": {
       "type": "string",
-      "description": "Path to list files from (relative to server root)"
+      "description": "Path to list files from (full path or relative to one of the allowed directories)"
     },
     "pattern": {
       "type": "string",
@@ -103,7 +104,7 @@ Reads file contents with support for different encodings and partial reads.
   "properties": {
     "path": {
       "type": "string",
-      "description": "Path to the file to read (relative to server root)"
+      "description": "Path to the file to read (full path or relative to one of the allowed directories)"
     },
     "encoding": {
       "type": "string",
@@ -156,7 +157,7 @@ Creates or updates files with specified content.
   "properties": {
     "path": {
       "type": "string",
-      "description": "Path to the file to write (relative to server root)"
+      "description": "Path to the file to write (full path or relative to one of the allowed directories)"
     },
     "content": {
       "type": "string",
@@ -209,7 +210,7 @@ Creates directories.
   "properties": {
     "path": {
       "type": "string",
-      "description": "Path to the directory to create (relative to server root)"
+      "description": "Path to the directory to create (full path or relative to one of the allowed directories)"
     },
     "recursive": {
       "type": "boolean",
@@ -240,7 +241,7 @@ Deletes files or directories.
   "properties": {
     "path": {
       "type": "string",
-      "description": "Path to delete (relative to server root)"
+      "description": "Path to delete (full path or relative to one of the allowed directories)"
     },
     "recursive": {
       "type": "boolean",
@@ -277,11 +278,11 @@ Copies files or directories.
   "properties": {
     "source": {
       "type": "string",
-      "description": "Source path (relative to server root)"
+      "description": "Source path (full path or relative to one of the allowed directories)"
     },
     "destination": {
       "type": "string",
-      "description": "Destination path (relative to server root)"
+      "description": "Destination path (full path or relative to one of the allowed directories)"
     },
     "overwrite": {
       "type": "boolean",
@@ -319,11 +320,11 @@ Moves or renames files or directories.
   "properties": {
     "source": {
       "type": "string",
-      "description": "Source path (relative to server root)"
+      "description": "Source path (full path or relative to one of the allowed directories)"
     },
     "destination": {
       "type": "string",
-      "description": "Destination path (relative to server root)"
+      "description": "Destination path (full path or relative to one of the allowed directories)"
     },
     "overwrite": {
       "type": "boolean",
@@ -355,7 +356,7 @@ Gets detailed information about a file or directory.
   "properties": {
     "path": {
       "type": "string",
-      "description": "Path to get information for (relative to server root)"
+      "description": "Path to get information for (full path or relative to one of the allowed directories)"
     }
   },
   "required": ["path"]
@@ -393,7 +394,7 @@ Searches file contents for matching patterns (grep-like functionality).
   "properties": {
     "root_path": {
       "type": "string",
-      "description": "Root directory to start the search from (relative to server root)"
+      "description": "Root directory to start the search from (full path or relative to one of the allowed directories)"
     },
     "pattern": {
       "type": "string",
@@ -478,9 +479,9 @@ Searches file contents for matching patterns (grep-like functionality).
 
 All tools follow a consistent error handling pattern:
 
-1. **Path Validation Errors**: When a path is outside the root directory or invalid
+1. **Path Validation Errors**: When a path is outside all allowed directories
    - Error Code: `path_validation_error`
-   - Message: "Path is outside of the allowed root directory"
+   - Message: "Path is outside of all allowed directories"
 
 2. **Permission Errors**: When file access permissions prevent an operation
    - Error Code: `permission_denied`
@@ -517,21 +518,25 @@ Error responses will have the following format:
 
 The server supports the following configuration options:
 
-1. **Root Directory**: Base directory for all operations
-   - Environment Variable: `FS_SERVER_ROOT`
-   - Command Line: `--root-dir <path>`
+1. **Allowed Directories**: Directories for all operations
+   - Environment Variable: `FS_ALLOWED_DIRS` (comma-separated)
+   - Command Line: `--allowed-dirs <paths>` (comma-separated)
 
-2. **Max File Size**: Maximum file size for read operations
+2. **Configuration File**: File listing allowed directories
+   - Environment Variable: `FS_CONFIG_FILE`
+   - Command Line: `--config-file <path>`
+
+3. **Max File Size**: Maximum file size for read operations
    - Environment Variable: `FS_MAX_FILE_SIZE`
    - Command Line: `--max-file-size <bytes>`
    - Default: 10MB
 
-3. **Request Timeout**: Maximum time for operations to complete
+4. **Request Timeout**: Maximum time for operations to complete
    - Environment Variable: `FS_REQUEST_TIMEOUT`
    - Command Line: `--request-timeout <seconds>`
    - Default: 30 seconds
 
-4. **Logging Level**: Verbosity of server logs
+5. **Logging Level**: Verbosity of server logs
    - Environment Variable: `FS_LOG_LEVEL`
    - Command Line: `--log-level <level>`
    - Options: error, warn, info, debug, trace
@@ -540,9 +545,10 @@ The server supports the following configuration options:
 ## Implementation Details
 
 1. **Path Handling**
-   - All paths are validated against the server root
+   - All paths are validated against the server's allowed directories
    - Symlinks are resolved to their canonical paths
    - Paths are normalized to handle different separators
+   - Relative paths are resolved against the closest allowed directory
 
 2. **File Size Limits**
    - Large file reads are chunked
@@ -561,7 +567,8 @@ The server supports the following configuration options:
 
 1. **Path Traversal Protection**
    - All paths are canonicalized before validation
-   - No relative paths that escape the root are allowed
+   - No relative paths that escape the allowed directories are allowed
+   - When multiple allowed directories are specified, each path is checked against all of them
 
 2. **Resource Limitations**
    - Maximum file size limits to prevent memory exhaustion

@@ -10,7 +10,7 @@ use chrono::{DateTime, Utc};
 use tracing::{debug, warn};
 use walkdir::WalkDir;
 
-use crate::utils::path::{validate_path, relative_to_root, PathError};
+use crate::utils::path::AllowedPaths;
 
 // Struct representing a directory entry
 #[derive(Debug, Serialize, Deserialize)]
@@ -40,7 +40,7 @@ pub fn schema() -> Value {
         "properties": {
             "path": {
                 "type": "string",
-                "description": "Path to list files from (relative to server root)"
+                "description": "Path to list files from (full path or relative to one of the allowed directories)"
             },
             "pattern": {
                 "type": "string",
@@ -68,9 +68,9 @@ pub fn schema() -> Value {
 }
 
 // Execute the list tool
-pub fn execute(args: &Value, server_root: &Path) -> Result<ToolCallResult> {
+pub fn execute(args: &Value, allowed_paths: &AllowedPaths) -> Result<ToolCallResult> {
     // Extract path parameter (required)
-    let path = args.get("path")
+    let path_str = args.get("path")
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow!("Missing path parameter"))?;
     
@@ -93,33 +93,27 @@ pub fn execute(args: &Value, server_root: &Path) -> Result<ToolCallResult> {
     
     debug!(
         "Listing path: '{}', pattern: '{}', recursive: {}, include_hidden: {}",
-        path, pattern, recursive, include_hidden
+        path_str, pattern, recursive, include_hidden
     );
     
+    // Create Path object
+    let path = Path::new(path_str);
+    
     // Validate the path
-    let validated_path = match validate_path(path, server_root) {
+    let validated_path = match allowed_paths.validate_path(path) {
         Ok(p) => p,
-        Err(PathError::OutsideRoot) => {
+        Err(e) => {
+            let error_message = match e {
+                crate::utils::path::PathError::OutsideAllowedPaths => 
+                    "Path is outside of all allowed directories".to_string(),
+                crate::utils::path::PathError::NotFound => 
+                    format!("Path not found: '{}'", path_str),
+                crate::utils::path::PathError::IoError(io_err) => 
+                    format!("IO error: {}", io_err),
+            };
+            
             return Ok(ToolCallResult {
-                content: vec![ToolContent::Text {
-                    text: "Path is outside of the allowed root directory".to_string(),
-                }],
-                is_error: Some(true),
-            });
-        }
-        Err(PathError::NotFound) => {
-            return Ok(ToolCallResult {
-                content: vec![ToolContent::Text {
-                    text: format!("Path not found: '{}'", path),
-                }],
-                is_error: Some(true),
-            });
-        }
-        Err(PathError::IoError(e)) => {
-            return Ok(ToolCallResult {
-                content: vec![ToolContent::Text {
-                    text: format!("IO error: {}", e),
-                }],
+                content: vec![ToolContent::Text { text: error_message }],
                 is_error: Some(true),
             });
         }
@@ -129,7 +123,7 @@ pub fn execute(args: &Value, server_root: &Path) -> Result<ToolCallResult> {
     if !validated_path.is_dir() {
         return Ok(ToolCallResult {
             content: vec![ToolContent::Text {
-                text: format!("Path is not a directory: '{}'", path),
+                text: format!("Path is not a directory: '{}'", path_str),
             }],
             is_error: Some(true),
         });
@@ -200,8 +194,8 @@ pub fn execute(args: &Value, server_root: &Path) -> Result<ToolCallResult> {
             "unknown"
         };
         
-        // Get path relative to the server root
-        let entry_path = relative_to_root(entry.path(), server_root);
+        // Get the closest relative path from allowed directories
+        let entry_path = allowed_paths.closest_relative_path(entry.path());
         
         // Create entry
         let mut result_entry = Entry {
@@ -245,7 +239,7 @@ pub fn execute(args: &Value, server_root: &Path) -> Result<ToolCallResult> {
     // Create the result
     let results = ListResults {
         entries,
-        directory: path.to_string(),
+        directory: path_str.to_string(),
     };
     
     // Convert to text format

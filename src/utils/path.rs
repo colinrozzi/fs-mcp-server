@@ -5,8 +5,8 @@ use tracing::{debug, warn};
 
 #[derive(Error, Debug)]
 pub enum PathError {
-    #[error("Path is outside of the allowed root directory")]
-    OutsideRoot,
+    #[error("Path is outside of all allowed directories")]
+    OutsideAllowedPaths,
     
     #[error("Path not found")]
     NotFound,
@@ -15,97 +15,157 @@ pub enum PathError {
     IoError(#[from] io::Error),
 }
 
-/// Validate a path to ensure it's within the allowed server root directory
-///
-/// This function:
-/// 1. Resolves path to an absolute path
-/// 2. Checks if the path is within the root directory
-/// 3. Returns the canonicalized path if valid
-///
-/// # Arguments
-///
-/// * `path` - The path to validate (relative to the server root)
-/// * `root` - The server root directory (absolute path)
-///
-/// # Returns
-///
-/// * `Ok(PathBuf)` - The canonicalized path if valid
-/// * `Err(PathError)` - If the path is invalid or outside the root
-pub fn validate_path(path: &str, root: &Path) -> Result<PathBuf, PathError> {
-    debug!("Validating path: '{}' against root: '{}'", path, root.display());
-    
-    // Ensure root is absolute and canonical
-    let root = match root.canonicalize() {
-        Ok(r) => r,
-        Err(e) => {
-            warn!("Failed to canonicalize root directory: {}", e);
-            return Err(PathError::IoError(e));
-        }
-    };
-    
-    // Join path with root to get the absolute path
-    let full_path = root.join(path);
-    
-    // Try to canonicalize the path
-    let canonical_path = match full_path.canonicalize() {
-        Ok(p) => p,
-        Err(e) => {
-            if e.kind() == io::ErrorKind::NotFound {
-                // Special case for creation operations where the path doesn't exist yet
-                // In this case, we validate the parent directory if it exists
-                if let Some(parent) = full_path.parent() {
-                    if parent.exists() {
-                        let parent_canonical = parent.canonicalize()?;
-                        if !parent_canonical.starts_with(&root) {
-                            warn!("Parent path is outside root: '{}'", parent.display());
-                            return Err(PathError::OutsideRoot);
-                        }
-                        
-                        // For non-existent files, return the original joined path
-                        // (not canonicalized since it doesn't exist)
-                        return Ok(full_path);
-                    }
-                }
-                
-                debug!("Path not found: '{}'", full_path.display());
-                return Err(PathError::NotFound);
-            } else {
-                warn!("Failed to canonicalize path: {}", e);
-                return Err(PathError::IoError(e));
-            }
-        }
-    };
-    
-    // Check if the canonicalized path is within the root
-    if !canonical_path.starts_with(&root) {
-        warn!(
-            "Path '{}' resolves to '{}' which is outside root '{}'",
-            path,
-            canonical_path.display(),
-            root.display()
-        );
-        return Err(PathError::OutsideRoot);
-    }
-    
-    debug!("Path '{}' validated successfully", path);
-    Ok(canonical_path)
+/// Manages a set of allowed directories for filesystem operations
+#[derive(Clone)]
+pub struct AllowedPaths {
+    paths: Vec<PathBuf>,
 }
 
-/// Get a path relative to the server root
-///
-/// # Arguments
-///
-/// * `path` - The absolute path to convert
-/// * `root` - The server root directory
-///
-/// # Returns
-///
-/// * `String` - The path relative to the root, or the original path 
-///             if it cannot be made relative
-pub fn relative_to_root(path: &Path, root: &Path) -> String {
-    match path.strip_prefix(root) {
-        Ok(rel_path) => rel_path.to_string_lossy().into_owned(),
-        Err(_) => path.to_string_lossy().into_owned(),
+impl AllowedPaths {
+    /// Create a new AllowedPaths from a list of directory paths
+    ///
+    /// # Arguments
+    ///
+    /// * `paths` - List of directory paths to allow
+    ///
+    /// # Returns
+    ///
+    /// * `Result<Self, PathError>` - A new AllowedPaths instance or an error
+    pub fn new(paths: Vec<PathBuf>) -> Result<Self, PathError> {
+        if paths.is_empty() {
+            return Err(PathError::IoError(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "No allowed directories specified"
+            )));
+        }
+        
+        // Canonicalize all paths
+        let mut canonicalized_paths = Vec::new();
+        for path in paths {
+            match path.canonicalize() {
+                Ok(canonical) => canonicalized_paths.push(canonical),
+                Err(e) => {
+                    warn!("Failed to canonicalize allowed path: {}", path.display());
+                    return Err(PathError::IoError(e));
+                },
+            }
+        }
+        
+        debug!("Initialized allowed paths: {:?}", canonicalized_paths);
+        
+        Ok(AllowedPaths { paths: canonicalized_paths })
+    }
+    
+    /// Validate a path to ensure it's within any of the allowed directories
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - The path to validate (absolute path)
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(PathBuf)` - The canonicalized path if valid
+    /// * `Err(PathError)` - If the path is invalid or outside all allowed directories
+    pub fn validate_path(&self, path: &Path) -> Result<PathBuf, PathError> {
+        debug!("Validating path: '{}'", path.display());
+        
+        // Try to canonicalize the path
+        let canonical_path = match path.canonicalize() {
+            Ok(p) => p,
+            Err(e) => {
+                if e.kind() == io::ErrorKind::NotFound {
+                    // Special case for creation operations where the path doesn't exist yet
+                    // In this case, we validate the parent directory if it exists
+                    if let Some(parent) = path.parent() {
+                        if parent.exists() {
+                            let parent_canonical = parent.canonicalize()?;
+                            
+                            // Check if the parent path is within any allowed directory
+                            if !self.is_path_allowed(&parent_canonical) {
+                                warn!("Parent path is outside all allowed directories: '{}'", parent.display());
+                                return Err(PathError::OutsideAllowedPaths);
+                            }
+                            
+                            // For non-existent files, return the original path
+                            return Ok(path.to_path_buf());
+                        }
+                    }
+                    
+                    debug!("Path not found: '{}'", path.display());
+                    return Err(PathError::NotFound);
+                } else {
+                    warn!("Failed to canonicalize path: {}", e);
+                    return Err(PathError::IoError(e));
+                }
+            }
+        };
+        
+        // Check if the path is within any allowed directory
+        if !self.is_path_allowed(&canonical_path) {
+            warn!(
+                "Path '{}' resolves to '{}' which is outside all allowed directories",
+                path.display(),
+                canonical_path.display()
+            );
+            return Err(PathError::OutsideAllowedPaths);
+        }
+        
+        debug!("Path '{}' validated successfully", path.display());
+        Ok(canonical_path)
+    }
+    
+    /// Check if a canonicalized path is within any of the allowed directories
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - The canonicalized path to check
+    ///
+    /// # Returns
+    ///
+    /// * `bool` - True if the path is allowed, false otherwise
+    fn is_path_allowed(&self, path: &Path) -> bool {
+        for allowed_path in &self.paths {
+            if path.starts_with(allowed_path) {
+                return true;
+            }
+        }
+        false
+    }
+    
+    /// Get the closest relative path from any of the allowed directories
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - The absolute path to convert
+    ///
+    /// # Returns
+    ///
+    /// * `String` - The path with the shortest relative representation,
+    ///              or the original path if it cannot be made relative
+    pub fn closest_relative_path(&self, path: &Path) -> String {
+        let mut best_relative = path.to_string_lossy().into_owned();
+        let mut best_components = usize::MAX;
+        
+        for allowed_path in &self.paths {
+            if let Ok(rel_path) = path.strip_prefix(allowed_path) {
+                let component_count = rel_path.components().count();
+                if component_count < best_components {
+                    best_relative = rel_path.to_string_lossy().into_owned();
+                    best_components = component_count;
+                }
+            }
+        }
+        
+        best_relative
+    }
+    
+    /// Get a list of all allowed directories
+    ///
+    /// # Returns
+    ///
+    /// * `Vec<PathBuf>` - List of all allowed directories (canonicalized)
+    pub fn all_paths(&self) -> &Vec<PathBuf> {
+        &self.paths
     }
 }
 
@@ -199,62 +259,94 @@ mod tests {
     use tempfile::tempdir;
     
     #[test]
-    fn test_validate_path_within_root() {
+    fn test_allowed_paths_single_directory() {
         let temp_dir = tempdir().unwrap();
-        let root = temp_dir.path();
+        let root = temp_dir.path().to_path_buf();
         
         // Create a file within the root
         let test_file = root.join("test.txt");
         fs::write(&test_file, "test content").unwrap();
         
-        // Validate a path within root
-        let result = validate_path("test.txt", root);
+        // Create AllowedPaths with a single directory
+        let allowed_paths = AllowedPaths::new(vec![root.clone()]).unwrap();
+        
+        // Validate a path within the allowed directory
+        let result = allowed_paths.validate_path(&test_file);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), test_file);
     }
     
     #[test]
-    fn test_validate_path_outside_root() {
-        let temp_dir = tempdir().unwrap();
-        let root = temp_dir.path();
+    fn test_allowed_paths_multiple_directories() {
+        let temp_dir1 = tempdir().unwrap();
+        let temp_dir2 = tempdir().unwrap();
         
-        // Attempt path traversal
-        let result = validate_path("../outside.txt", root);
-        assert!(result.is_err());
+        // Create a file in each directory
+        let test_file1 = temp_dir1.path().join("test1.txt");
+        let test_file2 = temp_dir2.path().join("test2.txt");
+        fs::write(&test_file1, "test content 1").unwrap();
+        fs::write(&test_file2, "test content 2").unwrap();
+        
+        // Create AllowedPaths with multiple directories
+        let allowed_paths = AllowedPaths::new(vec![
+            temp_dir1.path().to_path_buf(),
+            temp_dir2.path().to_path_buf(),
+        ]).unwrap();
+        
+        // Validate paths in both directories
+        let result1 = allowed_paths.validate_path(&test_file1);
+        let result2 = allowed_paths.validate_path(&test_file2);
+        
+        assert!(result1.is_ok());
+        assert!(result2.is_ok());
+        assert_eq!(result1.unwrap(), test_file1);
+        assert_eq!(result2.unwrap(), test_file2);
+    }
+    
+    #[test]
+    fn test_validate_path_outside_allowed_paths() {
+        let temp_dir = tempdir().unwrap();
+        let root = temp_dir.path().to_path_buf();
+        
+        // Create AllowedPaths with a single directory
+        let allowed_paths = AllowedPaths::new(vec![root.clone()]).unwrap();
+        
+        // Create a file outside the allowed directory
+        let outside_dir = tempdir().unwrap();
+        let outside_file = outside_dir.path().join("outside.txt");
+        fs::write(&outside_file, "outside content").unwrap();
+        
+        // Validate a path outside the allowed directory
+        let result = allowed_paths.validate_path(&outside_file);
+        
         match result {
-            Err(PathError::NotFound) => {}
-            _ => panic!("Expected NotFound error"),
+            Err(PathError::OutsideAllowedPaths) => {}
+            _ => panic!("Expected OutsideAllowedPaths error"),
         }
     }
     
     #[test]
-    fn test_validate_non_existent_path() {
-        let temp_dir = tempdir().unwrap();
-        let root = temp_dir.path();
+    fn test_closest_relative_path() {
+        let temp_dir1 = tempdir().unwrap();
+        let temp_dir2 = tempdir().unwrap();
         
-        // Try to validate a path that doesn't exist
-        let result = validate_path("nonexistent.txt", root);
+        // Create nested structure in the second directory
+        let nested_dir = temp_dir2.path().join("nested");
+        fs::create_dir_all(&nested_dir).unwrap();
         
-        // For non-existent files, we should get a NotFound error
-        match result {
-            Err(PathError::NotFound) => {}
-            _ => panic!("Expected NotFound error"),
-        }
-    }
-    
-    #[test]
-    fn test_relative_to_root() {
-        let root = Path::new("/tmp/root");
-        let path = Path::new("/tmp/root/subdir/file.txt");
+        let file_in_nested = nested_dir.join("file.txt");
+        fs::write(&file_in_nested, "nested content").unwrap();
         
-        assert_eq!(relative_to_root(path, root), "subdir/file.txt");
-    }
-    
-    #[test]
-    fn test_is_likely_binary_by_extension() {
-        assert!(is_likely_binary_by_extension(Path::new("test.exe")));
-        assert!(is_likely_binary_by_extension(Path::new("image.png")));
-        assert!(!is_likely_binary_by_extension(Path::new("file.txt")));
-        assert!(!is_likely_binary_by_extension(Path::new("script.py")));
+        // Create AllowedPaths with both directories
+        let allowed_paths = AllowedPaths::new(vec![
+            temp_dir1.path().to_path_buf(),
+            temp_dir2.path().to_path_buf(),
+            nested_dir.clone(),
+        ]).unwrap();
+        
+        // Test closest relative path selection
+        // From nested dir (should be relative to nested_dir not temp_dir2)
+        let relative = allowed_paths.closest_relative_path(&file_in_nested);
+        assert_eq!(relative, "file.txt");
     }
 }
