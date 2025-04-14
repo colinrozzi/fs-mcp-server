@@ -475,6 +475,31 @@ Searches file contents for matching patterns (grep-like functionality).
 }
 ```
 
+### 10. `list_allowed_dirs`
+
+Lists all directories that the server is configured to allow access to.
+
+**Parameters:**
+```json
+{
+  "type": "object",
+  "properties": {},
+  "required": []
+}
+```
+
+**Response:**
+```json
+{
+  "directories": [
+    "/path/to/allowed/directory1",
+    "/path/to/allowed/directory2",
+    "/another/allowed/path"
+  ],
+  "count": 3
+}
+```
+
 ## Error Handling
 
 All tools follow a consistent error handling pattern:

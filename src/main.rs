@@ -289,6 +289,17 @@ fn build_server(
         }
     );
     
+    // Add the list_allowed_dirs tool
+    server_builder = server_builder.with_tool(
+        "list_allowed_dirs",
+        Some("List all allowed directories"),
+        tools::list_allowed_dirs::schema(),
+        {
+            let paths = allowed_paths.clone();
+            move |args| tools::list_allowed_dirs::execute(&args, &paths)
+        }
+    );
+    
     // Build and return the server
     server_builder.build()
 }

@@ -19,6 +19,7 @@ The server provides the following MCP tools:
 7. **move**: Move or rename files or directories
 8. **info**: Get detailed file/directory information
 9. **search**: Search file contents (grep-like functionality)
+10. **list_allowed_dirs**: List all allowed directories configured on the server
 
 All operations are constrained to configurable allowed directories for security.
 
@@ -126,6 +127,13 @@ Parameters:
 - `context_lines`: Number of context lines to include (default: 0)
 - `timeout_secs`: Maximum time to spend searching (default: 30s)
 
+#### list_allowed_dirs
+
+Lists all directories that the server has been configured to allow access to.
+
+Parameters:
+- None
+
 ## Client Integration
 
 To use this server with an MCP client:
@@ -165,6 +173,10 @@ async fn main() -> Result<()> {
     // Initialize the client
     let init_result = client.initialize().await?;
     println!("Connected to: {} v{}", init_result.server_info.name, init_result.server_info.version);
+    
+    // List all allowed directories
+    let allowed_dirs_result = client.call_tool("list_allowed_dirs", &json!({})).await?;
+    println!("Allowed directories: {:?}", allowed_dirs_result);
     
     // List files in a directory
     let list_result = client.call_tool("list", &json!({

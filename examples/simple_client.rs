@@ -68,6 +68,17 @@ async fn main() -> Result<()> {
         println!("Tool: {} - {}", tool.name, tool.description.as_deref().unwrap_or(""));
     }
     
+    // Test list_allowed_dirs
+    println!("\nListing all allowed directories...");
+    let allowed_dirs_result = client.call_tool("list_allowed_dirs", &json!({})).await?;
+    
+    match &allowed_dirs_result.content[0] {
+        mcp_protocol::types::tool::ToolContent::Text { text } => {
+            println!("Allowed directories:\n{}", text);
+        },
+        _ => println!("Unexpected content type"),
+    }
+    
     // Test list from current directory
     println!("\nListing files in current directory...");
     let list_result = client.call_tool("list", &json!({

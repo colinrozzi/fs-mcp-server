@@ -7,3 +7,4 @@ pub mod delete;
 pub mod copy;
 pub mod move_file;
 pub mod info;
+pub mod list_allowed_dirs;
