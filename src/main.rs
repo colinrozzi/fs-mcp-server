@@ -291,6 +291,17 @@ fn build_server(allowed_paths: AllowedPaths, max_file_size: u64) -> Result<mcp_s
         },
     );
 
+    // Add the edit tool
+    server_builder = server_builder.with_tool(
+        "edit",
+        Some("Perform partial edits on a file"),
+        tools::edit::schema(),
+        {
+            let paths = allowed_paths.clone();
+            move |args| tools::edit::execute(&args, &paths)
+        },
+    );
+
     // Build and return the server
     server_builder.build()
 }

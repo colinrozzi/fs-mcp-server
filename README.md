@@ -20,6 +20,7 @@ The server provides the following MCP tools:
 8. **info**: Get detailed file/directory information
 9. **search**: Search file contents (grep-like functionality)
 10. **list_allowed_dirs**: List all allowed directories configured on the server
+11. **edit**: Perform partial edits on a file without rewriting the entire content
 
 All operations are constrained to configurable allowed directories for security.
 
@@ -131,6 +132,63 @@ Parameters:
 - `context_lines`: Number of context lines to include (default: 0)
 - `timeout_secs`: Maximum time to spend searching (default: 30s)
 
+#### edit
+
+Performs partial edits on a file without having to rewrite the entire content.
+
+Parameters:
+- `path`: Full path to the file to edit
+- `operations`: List of edit operations to perform (in order)
+  - Replace operation:
+    - `type`: "replace"
+    - `find`: Text to find (exact match)
+    - `replace`: Text to insert as replacement
+    - `occurrence`: Which occurrence to replace (0-based, -1 for all) (default: 0)
+    - `case_sensitive`: Whether the search is case-sensitive (default: true)
+  - Insert operation:
+    - `type`: "insert"
+    - `position`: Character position to insert at (0-based)
+    - `content`: Text to insert
+  - Delete operation:
+    - `type`: "delete"
+    - `start`: Start character position (0-based, inclusive)
+    - `end`: End character position (0-based, exclusive)
+  - Replace lines operation:
+    - `type`: "replace_lines"
+    - `start_line`: Start line number (0-based, inclusive)
+    - `end_line`: End line number (0-based, inclusive)
+    - `content`: Text to insert as replacement
+- `create_if_missing`: Create the file if it doesn't exist (default: false)
+- `backup`: Create a backup of the original file before editing (default: false)
+
+Example:
+```json
+{
+  "path": "/path/to/file.txt",
+  "operations": [
+    {
+      "type": "replace",
+      "find": "hello",
+      "replace": "hello world",
+      "occurrence": 0,
+      "case_sensitive": true
+    },
+    {
+      "type": "insert",
+      "position": 100,
+      "content": "new text at position 100"
+    },
+    {
+      "type": "replace_lines",
+      "start_line": 5,
+      "end_line": 7,
+      "content": "new line 6\nnew line 7\nnew line 8"
+    }
+  ],
+  "backup": true
+}
+```
+
 #### list_allowed_dirs
 
 Lists all directories that the server has been configured to allow access to.
@@ -190,15 +248,22 @@ async fn main() -> Result<()> {
     // Process result
     println!("List result: {:?}", list_result);
     
-    // Search for a pattern in files
-    let search_result = client.call_tool("search", &json!({
-        "root_path": "/path/to/src",
-        "pattern": "TODO",
-        "file_pattern": "*.rs"
+    // Edit a file by replacing text
+    let edit_result = client.call_tool("edit", &json!({
+        "path": "/path/to/file.txt",
+        "operations": [
+            {
+                "type": "replace",
+                "find": "TODO",
+                "replace": "DONE",
+                "occurrence": -1
+            }
+        ],
+        "backup": true
     })).await?;
     
     // Process result
-    println!("Search result: {:?}", search_result);
+    println!("Edit result: {:?}", edit_result);
     
     // Shutdown
     client.shutdown().await?;
@@ -212,7 +277,7 @@ async fn main() -> Result<()> {
 ### Project Structure
 
 - `src/main.rs`: Server entry point and initialization
-- `src/tools/`: Tool implementations (list, read, search, etc.)
+- `src/tools/`: Tool implementations (list, read, search, edit, etc.)
 - `src/utils/`: Utility functions (path validation, etc.)
 
 ### Adding New Tools

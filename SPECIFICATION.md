@@ -504,6 +504,150 @@ Lists all directories that the server is configured to allow access to.
 }
 ```
 
+### 11. `edit`
+
+Performs partial edits on a file without having to rewrite the entire content.
+
+**Parameters:**
+```json
+{
+  "type": "object",
+  "properties": {
+    "path": {
+      "type": "string",
+      "description": "Full path to the file to edit"
+    },
+    "operations": {
+      "type": "array",
+      "description": "List of edit operations to perform (in order)",
+      "items": {
+        "type": "object",
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": ["replace"],
+                "description": "Replace operation"
+              },
+              "find": {
+                "type": "string",
+                "description": "Text to find (exact match)"
+              },
+              "replace": {
+                "type": "string",
+                "description": "Text to insert as replacement"
+              },
+              "occurrence": {
+                "type": "integer",
+                "description": "Which occurrence to replace (0-based, -1 for all)",
+                "default": 0
+              },
+              "case_sensitive": {
+                "type": "boolean",
+                "description": "Whether the search is case-sensitive",
+                "default": true
+              }
+            },
+            "required": ["type", "find", "replace"]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": ["insert"],
+                "description": "Insert operation"
+              },
+              "position": {
+                "type": "integer",
+                "description": "Character position to insert at (0-based)"
+              },
+              "content": {
+                "type": "string",
+                "description": "Text to insert"
+              }
+            },
+            "required": ["type", "position", "content"]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": ["delete"],
+                "description": "Delete operation"
+              },
+              "start": {
+                "type": "integer",
+                "description": "Start character position (0-based, inclusive)"
+              },
+              "end": {
+                "type": "integer",
+                "description": "End character position (0-based, exclusive)"
+              }
+            },
+            "required": ["type", "start", "end"]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": ["replace_lines"],
+                "description": "Replace lines operation"
+              },
+              "start_line": {
+                "type": "integer",
+                "description": "Start line number (0-based, inclusive)"
+              },
+              "end_line": {
+                "type": "integer",
+                "description": "End line number (0-based, inclusive)"
+              },
+              "content": {
+                "type": "string",
+                "description": "Text to insert as replacement"
+              }
+            },
+            "required": ["type", "start_line", "end_line", "content"]
+          }
+        ]
+      }
+    },
+    "create_if_missing": {
+      "type": "boolean",
+      "description": "Create the file if it doesn't exist",
+      "default": false
+    },
+    "backup": {
+      "type": "boolean",
+      "description": "Create a backup of the original file before editing",
+      "default": false
+    }
+  },
+  "required": ["path", "operations"]
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "path": "/absolute/path/to/file.txt",
+  "operations_applied": 3,
+  "operations_failed": 0,
+  "failed_operations": [],
+  "backup_path": "/absolute/path/to/file.txt.bak",
+  "metadata": {
+    "path": "/absolute/path/to/file.txt",
+    "modified": "2025-04-14T15:30:00Z",
+    "size": 1024
+  }
+}
+```
+
 ## Error Handling
 
 All tools follow a consistent error handling pattern:
