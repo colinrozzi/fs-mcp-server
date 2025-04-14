@@ -3,7 +3,6 @@ use mcp_protocol::types::tool::{ToolCallResult, ToolContent};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::fs;
-use std::io::{Read, Write, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use tracing::{debug, warn};
 use chrono::{DateTime, Utc};
@@ -240,9 +239,15 @@ pub fn execute(args: &Value, allowed_paths: &AllowedPaths) -> Result<ToolCallRes
     let validated_path = match allowed_paths.validate_path(path) {
         Ok(p) => p,
         Err(e) => {
-            let error_message = match e {
-                crate::utils::path::PathError::OutsideAllowedPaths => 
-                    "Path is outside of all allowed directories".to_string(),
+            match e {
+                crate::utils::path::PathError::OutsideAllowedPaths => {
+                    return Ok(ToolCallResult {
+                        content: vec![ToolContent::Text { 
+                            text: "Path is outside of all allowed directories".to_string() 
+                        }],
+                        is_error: Some(true),
+                    });
+                },
                 crate::utils::path::PathError::NotFound => {
                     if create_if_missing {
                         // If the file doesn't exist but we're allowed to create it, check if the parent directory exists
@@ -252,33 +257,40 @@ pub fn execute(args: &Value, allowed_paths: &AllowedPaths) -> Result<ToolCallRes
                                     // Parent directory exists and is allowed, continue with an empty file
                                     path.to_path_buf()
                                 },
-                                Err(_) => format!("Parent directory not found or not allowed: '{}'", parent.display())
+                                Err(_) => {
+                                    return Ok(ToolCallResult {
+                                        content: vec![ToolContent::Text { 
+                                            text: format!("Parent directory not found or not allowed: '{}'", parent.display()) 
+                                        }],
+                                        is_error: Some(true),
+                                    });
+                                }
                             }
                         } else {
-                            "Invalid path: no parent directory".to_string()
+                            return Ok(ToolCallResult {
+                                content: vec![ToolContent::Text { 
+                                    text: "Invalid path: no parent directory".to_string() 
+                                }],
+                                is_error: Some(true),
+                            });
                         }
                     } else {
-                        format!("File not found: '{}'. Use create_if_missing=true to create it.", path_str)
+                        return Ok(ToolCallResult {
+                            content: vec![ToolContent::Text { 
+                                text: format!("File not found: '{}'. Use create_if_missing=true to create it.", path_str) 
+                            }],
+                            is_error: Some(true),
+                        });
                     }
                 },
-                crate::utils::path::PathError::IoError(io_err) => 
-                    format!("IO error: {}", io_err),
-            };
-            
-            if error_message.starts_with("Path is outside") || error_message.starts_with("Parent directory") 
-               || error_message.starts_with("Invalid path") {
-                return Ok(ToolCallResult {
-                    content: vec![ToolContent::Text { text: error_message }],
-                    is_error: Some(true),
-                });
-            }
-            
-            // For NotFound when create_if_missing is true, we continue with the validated_path
-            if !create_if_missing {
-                return Ok(ToolCallResult {
-                    content: vec![ToolContent::Text { text: error_message }],
-                    is_error: Some(true),
-                });
+                crate::utils::path::PathError::IoError(io_err) => {
+                    return Ok(ToolCallResult {
+                        content: vec![ToolContent::Text { 
+                            text: format!("IO error: {}", io_err) 
+                        }],
+                        is_error: Some(true),
+                    });
+                }
             }
         }
     };
@@ -534,28 +546,29 @@ fn apply_operation(operation: &EditOperation, content: &mut String) -> Result<()
             }
         },
         EditOperation::Insert { position, content: insert_content } => {
-            if *position > content.len() {
-                return Err(anyhow!("Insert position {} is beyond the end of the file (length: {})", position, content.len()));
-            }
+            let effective_position = if *position > content.len() {
+                // Allow inserting at the end by clamping the position
+                content.len()
+            } else {
+                *position
+            };
             
             // Split the content at the position and insert the new content
-            let (before, after) = content.split_at(*position);
+            let (before, after) = content.split_at(effective_position);
             *content = format!("{}{}{}", before, insert_content, after);
         },
         EditOperation::Delete { start, end } => {
             if *start >= content.len() {
                 return Err(anyhow!("Delete start position {} is beyond the end of the file (length: {})", start, content.len()));
             }
-            if *end > content.len() {
-                return Err(anyhow!("Delete end position {} is beyond the end of the file (length: {})", end, content.len()));
-            }
-            if start >= end {
-                return Err(anyhow!("Delete start position {} must be less than end position {}", start, end));
+            let effective_end = std::cmp::min(*end, content.len());
+            if start >= &effective_end {
+                return Err(anyhow!("Delete start position {} must be less than end position {}", start, effective_end));
             }
             
             // Split the content and remove the specified range
             let (before, rest) = content.split_at(*start);
-            let after = &rest[(*end - *start)..];
+            let after = &rest[(effective_end - *start)..];
             *content = format!("{}{}", before, after);
         },
         EditOperation::ReplaceLines { start_line, end_line, content: replacement } => {
