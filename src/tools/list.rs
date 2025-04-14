@@ -1,0 +1,263 @@
+use anyhow::{anyhow, Result};
+use glob::Pattern;
+use mcp_protocol::types::tool::{ToolCallResult, ToolContent};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
+use chrono::{DateTime, Utc};
+use tracing::{debug, warn};
+use walkdir::WalkDir;
+
+use crate::utils::path::{validate_path, relative_to_root, PathError};
+
+// Struct representing a directory entry
+#[derive(Debug, Serialize, Deserialize)]
+struct Entry {
+    name: String,
+    path: String,
+    #[serde(rename = "type")]
+    entry_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    size: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    modified: Option<String>,
+    is_hidden: bool,
+}
+
+// Struct representing list results
+#[derive(Debug, Serialize, Deserialize)]
+struct ListResults {
+    entries: Vec<Entry>,
+    directory: String,
+}
+
+// Define the schema for the tool
+pub fn schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Path to list files from (relative to server root)"
+            },
+            "pattern": {
+                "type": "string",
+                "description": "Optional glob pattern to filter files",
+                "default": "*"
+            },
+            "recursive": {
+                "type": "boolean",
+                "description": "Whether to list files recursively",
+                "default": false
+            },
+            "include_hidden": {
+                "type": "boolean",
+                "description": "Whether to include hidden files (starting with .)",
+                "default": false
+            },
+            "metadata": {
+                "type": "boolean",
+                "description": "Whether to include file metadata (size, type, modification time)",
+                "default": true
+            }
+        },
+        "required": ["path"]
+    })
+}
+
+// Execute the list tool
+pub fn execute(args: &Value, server_root: &Path) -> Result<ToolCallResult> {
+    // Extract path parameter (required)
+    let path = args.get("path")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("Missing path parameter"))?;
+    
+    // Extract optional parameters
+    let pattern = args.get("pattern")
+        .and_then(|v| v.as_str())
+        .unwrap_or("*");
+    
+    let recursive = args.get("recursive")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    
+    let include_hidden = args.get("include_hidden")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    
+    let include_metadata = args.get("metadata")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    
+    debug!(
+        "Listing path: '{}', pattern: '{}', recursive: {}, include_hidden: {}",
+        path, pattern, recursive, include_hidden
+    );
+    
+    // Validate the path
+    let validated_path = match validate_path(path, server_root) {
+        Ok(p) => p,
+        Err(PathError::OutsideRoot) => {
+            return Ok(ToolCallResult {
+                content: vec![ToolContent::Text {
+                    text: "Path is outside of the allowed root directory".to_string(),
+                }],
+                is_error: Some(true),
+            });
+        }
+        Err(PathError::NotFound) => {
+            return Ok(ToolCallResult {
+                content: vec![ToolContent::Text {
+                    text: format!("Path not found: '{}'", path),
+                }],
+                is_error: Some(true),
+            });
+        }
+        Err(PathError::IoError(e)) => {
+            return Ok(ToolCallResult {
+                content: vec![ToolContent::Text {
+                    text: format!("IO error: {}", e),
+                }],
+                is_error: Some(true),
+            });
+        }
+    };
+    
+    // Check if the path is a directory
+    if !validated_path.is_dir() {
+        return Ok(ToolCallResult {
+            content: vec![ToolContent::Text {
+                text: format!("Path is not a directory: '{}'", path),
+            }],
+            is_error: Some(true),
+        });
+    }
+    
+    // Create a glob pattern
+    let glob_pattern = match Pattern::new(pattern) {
+        Ok(p) => p,
+        Err(e) => {
+            return Ok(ToolCallResult {
+                content: vec![ToolContent::Text {
+                    text: format!("Invalid pattern: {}", e),
+                }],
+                is_error: Some(true),
+            });
+        }
+    };
+    
+    // Collect directory entries
+    let mut entries = Vec::new();
+    
+    // Setup the walker
+    let max_depth = if recursive { std::usize::MAX } else { 1 };
+    let walker = WalkDir::new(&validated_path)
+        .max_depth(max_depth)
+        .follow_links(false)
+        .into_iter();
+    
+    // Process entries
+    for entry_result in walker {
+        let entry = match entry_result {
+            Ok(e) => e,
+            Err(e) => {
+                warn!("Error walking directory: {}", e);
+                continue;
+            }
+        };
+        
+        // Skip the root directory itself if not at the top level
+        if entry.path() == validated_path && entry.depth() > 0 {
+            continue;
+        }
+        
+        // Get the file name
+        let name = entry.file_name().to_string_lossy().to_string();
+        
+        // Check if it's a hidden file
+        let is_hidden = name.starts_with('.');
+        
+        // Skip hidden files if not included
+        if is_hidden && !include_hidden {
+            continue;
+        }
+        
+        // Skip entries that don't match the pattern
+        if !glob_pattern.matches(&name) && entry.path() != validated_path {
+            continue;
+        }
+        
+        // Get entry type
+        let entry_type = if entry.file_type().is_dir() {
+            "directory"
+        } else if entry.file_type().is_file() {
+            "file"
+        } else if entry.file_type().is_symlink() {
+            "symlink"
+        } else {
+            "unknown"
+        };
+        
+        // Get path relative to the server root
+        let entry_path = relative_to_root(entry.path(), server_root);
+        
+        // Create entry
+        let mut result_entry = Entry {
+            name,
+            path: entry_path,
+            entry_type: entry_type.to_string(),
+            size: None,
+            modified: None,
+            is_hidden,
+        };
+        
+        // Add metadata if requested
+        if include_metadata {
+            // Get file size for files
+            if entry.file_type().is_file() {
+                if let Ok(metadata) = entry.metadata() {
+                    result_entry.size = Some(metadata.len());
+                    
+                    // Get modification time
+                    if let Ok(modified) = metadata.modified() {
+                        if let Ok(datetime) = system_time_to_date_string(modified) {
+                            result_entry.modified = Some(datetime);
+                        }
+                    }
+                }
+            }
+        }
+        
+        entries.push(result_entry);
+    }
+    
+    // Sort entries: directories first, then files, alphabetically
+    entries.sort_by(|a, b| {
+        match (a.entry_type.as_str(), b.entry_type.as_str()) {
+            ("directory", "file") => std::cmp::Ordering::Less,
+            ("file", "directory") => std::cmp::Ordering::Greater,
+            _ => a.name.cmp(&b.name),
+        }
+    });
+    
+    // Create the result
+    let results = ListResults {
+        entries,
+        directory: path.to_string(),
+    };
+    
+    // Return as JSON
+    Ok(ToolCallResult {
+        content: vec![ToolContent::Json {
+            json: serde_json::to_value(results)?,
+        }],
+        is_error: Some(false),
+    })
+}
+
+// Helper function to convert SystemTime to formatted date string
+fn system_time_to_date_string(time: SystemTime) -> Result<String, std::time::SystemTimeError> {
+    let datetime = DateTime::<Utc>::from(time);
+    Ok(datetime.to_rfc3339())
+}
