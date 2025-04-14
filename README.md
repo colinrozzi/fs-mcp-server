@@ -10,15 +10,15 @@ The Filesystem MCP Server provides a standardized interface for interacting with
 
 The server provides the following MCP tools:
 
-1. **fs.list**: List files and directories with metadata
-2. **fs.read**: Read file contents with various encoding options
-3. **fs.write**: Create or update files with content
-4. **fs.mkdir**: Create directories
-5. **fs.delete**: Delete files or directories
-6. **fs.copy**: Copy files or directories
-7. **fs.move**: Move or rename files or directories
-8. **fs.info**: Get detailed file/directory information
-9. **fs.search**: Search file contents (grep-like functionality)
+1. **list**: List files and directories with metadata
+2. **read**: Read file contents with various encoding options
+3. **write**: Create or update files with content
+4. **mkdir**: Create directories
+5. **delete**: Delete files or directories
+6. **copy**: Copy files or directories
+7. **move**: Move or rename files or directories
+8. **info**: Get detailed file/directory information
+9. **search**: Search file contents (grep-like functionality)
 
 All operations are constrained to a configurable root directory for security.
 
@@ -73,7 +73,7 @@ FS_SERVER_ROOT=/data FS_LOG_LEVEL=debug ./target/release/fs-mcp-server
 
 The server provides the following MCP tools:
 
-#### fs.list
+#### list
 
 Lists files and directories at a specified path.
 
@@ -84,7 +84,7 @@ Parameters:
 - `include_hidden`: Whether to include hidden files (default: false)
 - `metadata`: Whether to include file metadata (default: true)
 
-#### fs.read
+#### read
 
 Reads file contents with support for different encodings and partial reads.
 
@@ -95,7 +95,7 @@ Parameters:
 - `end_line`: End line for partial read (inclusive)
 - `max_size`: Maximum number of bytes to read (default: 1MB)
 
-#### fs.search
+#### search
 
 Searches file contents for matching patterns (grep-like functionality).
 

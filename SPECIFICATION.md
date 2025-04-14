@@ -31,7 +31,7 @@ The root directory can be specified through:
 
 The server provides the following tools:
 
-### 1. `fs.list`
+### 1. `list`
 
 Lists files and directories at a specified path.
 
@@ -92,7 +92,7 @@ Lists files and directories at a specified path.
 }
 ```
 
-### 2. `fs.read`
+### 2. `read`
 
 Reads file contents with support for different encodings and partial reads.
 
@@ -145,7 +145,7 @@ Reads file contents with support for different encodings and partial reads.
 }
 ```
 
-### 3. `fs.write`
+### 3. `write`
 
 Creates or updates files with specified content.
 
@@ -198,7 +198,7 @@ Creates or updates files with specified content.
 }
 ```
 
-### 4. `fs.mkdir`
+### 4. `mkdir`
 
 Creates directories.
 
@@ -229,7 +229,7 @@ Creates directories.
 }
 ```
 
-### 5. `fs.delete`
+### 5. `delete`
 
 Deletes files or directories.
 
@@ -266,7 +266,7 @@ Deletes files or directories.
 }
 ```
 
-### 6. `fs.copy`
+### 6. `copy`
 
 Copies files or directories.
 
@@ -308,7 +308,7 @@ Copies files or directories.
 }
 ```
 
-### 7. `fs.move`
+### 7. `move`
 
 Moves or renames files or directories.
 
@@ -344,7 +344,7 @@ Moves or renames files or directories.
 }
 ```
 
-### 8. `fs.info`
+### 8. `info`
 
 Gets detailed information about a file or directory.
 
@@ -382,7 +382,7 @@ Gets detailed information about a file or directory.
 }
 ```
 
-### 9. `fs.search`
+### 9. `search`
 
 Searches file contents for matching patterns (grep-like functionality).
 

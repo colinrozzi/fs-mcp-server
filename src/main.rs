@@ -140,7 +140,7 @@ fn build_server(
     
     // Add the list tool
     server_builder = server_builder.with_tool(
-        "fs.list",
+        "list",
         Some("List files in a directory"),
         tools::list::schema(),
         {
@@ -151,7 +151,7 @@ fn build_server(
     
     // Add the read tool
     server_builder = server_builder.with_tool(
-        "fs.read",
+        "read",
         Some("Read file contents"),
         tools::read::schema(),
         {
@@ -163,7 +163,7 @@ fn build_server(
     
     // Add the write tool
     server_builder = server_builder.with_tool(
-        "fs.write",
+        "write",
         Some("Write content to a file"),
         tools::write::schema(),
         {
@@ -174,7 +174,7 @@ fn build_server(
     
     // Add the mkdir tool
     server_builder = server_builder.with_tool(
-        "fs.mkdir",
+        "mkdir",
         Some("Create directories"),
         tools::mkdir::schema(),
         {
@@ -185,7 +185,7 @@ fn build_server(
     
     // Add the delete tool
     server_builder = server_builder.with_tool(
-        "fs.delete",
+        "delete",
         Some("Delete files or directories"),
         tools::delete::schema(),
         {
@@ -196,7 +196,7 @@ fn build_server(
     
     // Add the copy tool
     server_builder = server_builder.with_tool(
-        "fs.copy",
+        "copy",
         Some("Copy files or directories"),
         tools::copy::schema(),
         {
@@ -207,7 +207,7 @@ fn build_server(
     
     // Add the move tool
     server_builder = server_builder.with_tool(
-        "fs.move",
+        "move",
         Some("Move or rename files or directories"),
         tools::move_file::schema(),
         {
@@ -218,7 +218,7 @@ fn build_server(
     
     // Add the info tool
     server_builder = server_builder.with_tool(
-        "fs.info",
+        "info",
         Some("Get detailed information about a file or directory"),
         tools::info::schema(),
         {
@@ -229,7 +229,7 @@ fn build_server(
     
     // Add the search tool (non-async version)
     server_builder = server_builder.with_tool(
-        "fs.search",
+        "search",
         Some("Search file contents for matching patterns"),
         tools::search::schema(),
         {

@@ -59,7 +59,7 @@ async fn main() -> Result<()> {
     
     // Test 1: Create a directory
     println!("\n1. Creating directory 'test_dir'...");
-    let mkdir_result = client.call_tool("fs.mkdir", &json!({
+    let mkdir_result = client.call_tool("mkdir", &json!({
         "path": "test_dir",
         "recursive": true
     })).await?;
@@ -68,7 +68,7 @@ async fn main() -> Result<()> {
     
     // Test 2: Write a file
     println!("\n2. Writing content to 'test_dir/hello.txt'...");
-    let write_result = client.call_tool("fs.write", &json!({
+    let write_result = client.call_tool("write", &json!({
         "path": "test_dir/hello.txt",
         "content": "Hello, world!\nThis is a test file.\nContains searchable pattern.",
         "encoding": "utf8",
@@ -79,7 +79,7 @@ async fn main() -> Result<()> {
     
     // Test 3: Write another file
     println!("\n3. Writing content to 'test_dir/data.txt'...");
-    let write_result2 = client.call_tool("fs.write", &json!({
+    let write_result2 = client.call_tool("write", &json!({
         "path": "test_dir/data.txt",
         "content": "This is another file with some data.\nIt also has a searchable pattern inside.",
         "encoding": "utf8",
@@ -90,7 +90,7 @@ async fn main() -> Result<()> {
     
     // Test 4: List files in the directory
     println!("\n4. Listing files in 'test_dir'...");
-    let list_result = client.call_tool("fs.list", &json!({
+    let list_result = client.call_tool("list", &json!({
         "path": "test_dir",
         "recursive": false
     })).await?;
@@ -99,7 +99,7 @@ async fn main() -> Result<()> {
     
     // Test 5: Read file content
     println!("\n5. Reading 'test_dir/hello.txt'...");
-    let read_result = client.call_tool("fs.read", &json!({
+    let read_result = client.call_tool("read", &json!({
         "path": "test_dir/hello.txt"
     })).await?;
     
@@ -107,7 +107,7 @@ async fn main() -> Result<()> {
     
     // Test 6: Get file info
     println!("\n6. Getting info for 'test_dir/hello.txt'...");
-    let info_result = client.call_tool("fs.info", &json!({
+    let info_result = client.call_tool("info", &json!({
         "path": "test_dir/hello.txt"
     })).await?;
     
@@ -115,7 +115,7 @@ async fn main() -> Result<()> {
     
     // Test 7: Copy file
     println!("\n7. Copying 'test_dir/hello.txt' to 'test_dir/hello_copy.txt'...");
-    let copy_result = client.call_tool("fs.copy", &json!({
+    let copy_result = client.call_tool("copy", &json!({
         "source": "test_dir/hello.txt",
         "destination": "test_dir/hello_copy.txt"
     })).await?;
@@ -124,7 +124,7 @@ async fn main() -> Result<()> {
     
     // Test 8: Create a subdirectory
     println!("\n8. Creating subdirectory 'test_dir/subdir'...");
-    let mkdir_subdir_result = client.call_tool("fs.mkdir", &json!({
+    let mkdir_subdir_result = client.call_tool("mkdir", &json!({
         "path": "test_dir/subdir"
     })).await?;
     
@@ -132,7 +132,7 @@ async fn main() -> Result<()> {
     
     // Test 9: Move file
     println!("\n9. Moving 'test_dir/hello_copy.txt' to 'test_dir/subdir/moved.txt'...");
-    let move_result = client.call_tool("fs.move", &json!({
+    let move_result = client.call_tool("move", &json!({
         "source": "test_dir/hello_copy.txt",
         "destination": "test_dir/subdir/moved.txt"
     })).await?;
@@ -141,7 +141,7 @@ async fn main() -> Result<()> {
     
     // Test 10: List all files recursively
     println!("\n10. Listing all files recursively...");
-    let list_all_result = client.call_tool("fs.list", &json!({
+    let list_all_result = client.call_tool("list", &json!({
         "path": ".",
         "recursive": true
     })).await?;
@@ -150,7 +150,7 @@ async fn main() -> Result<()> {
     
     // Test 11: Search for pattern
     println!("\n11. Searching for 'searchable pattern'...");
-    let search_result = client.call_tool("fs.search", &json!({
+    let search_result = client.call_tool("search", &json!({
         "root_path": ".",
         "pattern": "searchable pattern",
         "recursive": true
@@ -160,7 +160,7 @@ async fn main() -> Result<()> {
     
     // Test 12: Delete a file
     println!("\n12. Deleting 'test_dir/data.txt'...");
-    let delete_result = client.call_tool("fs.delete", &json!({
+    let delete_result = client.call_tool("delete", &json!({
         "path": "test_dir/data.txt"
     })).await?;
     
@@ -168,7 +168,7 @@ async fn main() -> Result<()> {
     
     // Test 13: Delete directory recursively
     println!("\n13. Deleting 'test_dir' recursively...");
-    let delete_dir_result = client.call_tool("fs.delete", &json!({
+    let delete_dir_result = client.call_tool("delete", &json!({
         "path": "test_dir",
         "recursive": true
     })).await?;
@@ -177,7 +177,7 @@ async fn main() -> Result<()> {
     
     // Final: List everything to show the state
     println!("\nFinal state: Listing all files...");
-    let final_list = client.call_tool("fs.list", &json!({
+    let final_list = client.call_tool("list", &json!({
         "path": ".",
         "recursive": true
     })).await?;

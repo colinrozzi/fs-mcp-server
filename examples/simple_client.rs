@@ -49,9 +49,9 @@ async fn main() -> Result<()> {
         println!("Tool: {} - {}", tool.name, tool.description.as_deref().unwrap_or(""));
     }
     
-    // Test fs.list
+    // Test list
     println!("\nListing files in current directory...");
-    let list_result = client.call_tool("fs.list", &json!({
+    let list_result = client.call_tool("list", &json!({
         "path": ".",
         "recursive": false
     })).await?;
@@ -63,9 +63,9 @@ async fn main() -> Result<()> {
         _ => println!("Unexpected content type"),
     }
     
-    // Test fs.read on our Cargo.toml file
+    // Test read on our Cargo.toml file
     println!("\nReading Cargo.toml file...");
-    let read_result = client.call_tool("fs.read", &json!({
+    let read_result = client.call_tool("read", &json!({
         "path": "Cargo.toml"
     })).await?;
     
@@ -79,9 +79,9 @@ async fn main() -> Result<()> {
         _ => println!("Unexpected content type"),
     }
     
-    // Test fs.search
+    // Test search
     println!("\nSearching for 'execute' in src directory...");
-    let search_result = client.call_tool("fs.search", &json!({
+    let search_result = client.call_tool("search", &json!({
         "root_path": "src",
         "pattern": "execute",
         "recursive": true
