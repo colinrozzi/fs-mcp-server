@@ -38,7 +38,7 @@ struct CliArgs {
     request_timeout: u64,
 
     /// Log level
-    #[clap(long, env = "FS_LOG_LEVEL", default_value = "info")]
+    #[clap(long, env = "FS_LOG_LEVEL", default_value = "debug")]
     log_level: String,
 
     /// Log file path
