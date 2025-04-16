@@ -6,8 +6,8 @@ use std::{
     io::{self, BufRead},
     path::{Path, PathBuf},
 };
-use tracing::{info, warn, Level};
-use tracing_subscriber::fmt;
+use tracing::{info, warn, debug, Level};
+use tracing_subscriber::{self, fmt, EnvFilter};
 
 mod tools;
 mod utils;
@@ -69,6 +69,10 @@ async fn main() -> Result<()> {
     }
     info!("Max file size: {} bytes", args.max_file_size);
     info!("Request timeout: {} seconds", args.request_timeout);
+    
+    // Add some test logging to verify integration with rust-mcp
+    debug!("This is a debug message from fs-mcp-server");
+    warn!("This is a warning message from fs-mcp-server");
 
     // Create and build server
     let server = build_server(allowed_paths, args.max_file_size)?;
@@ -145,7 +149,9 @@ fn setup_logging(log_level: &str, log_file: Option<&Path>) -> Result<()> {
     };
 
     // Clear existing log file if it exists
-    std::fs::remove_file(log_file.clone().unwrap()).ok();
+    if let Some(log_path) = log_file.as_ref() {
+        std::fs::remove_file(log_path).ok();
+    }
 
     // Create the logger
     if let Some(log_file_path) = log_file {
@@ -157,9 +163,15 @@ fn setup_logging(log_level: &str, log_file: Option<&Path>) -> Result<()> {
         // Get a static string path to use in the closure
         let log_path = log_file_path.to_path_buf();
 
-        // Create a file logger
+        // Create a file subscriber with an env_filter to capture logs from all relevant crates
+        
+        // This filter will include all mcp-related crates at the specified level
+        // We also include this crate's logs
+        let filter_level = log_level.to_lowercase();
+        let filter = EnvFilter::new(format!("mcp_server={0},mcp_protocol={0},mcp_client={0},fs_mcp_server={0}", filter_level));
+        
         let file_subscriber = fmt::Subscriber::builder()
-            .with_max_level(level)
+            .with_env_filter(filter)
             .with_writer(move || -> Box<dyn std::io::Write> {
                 let path = log_path.clone();
                 Box::new(std::io::BufWriter::new(
@@ -176,6 +188,8 @@ fn setup_logging(log_level: &str, log_file: Option<&Path>) -> Result<()> {
         // Set up the subscriber
         tracing::subscriber::set_global_default(file_subscriber)
             .expect("Failed to set global default subscriber");
+        
+        info!("Logging initialized at '{}' level, capturing logs from mcp_* crates", log_level);
     }
 
     Ok(())
