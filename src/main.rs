@@ -144,6 +144,9 @@ fn setup_logging(log_level: &str, log_file: Option<&Path>) -> Result<()> {
         Some("/Users/colinrozzi/work/mcp-servers/fs-mcp-server/logs/fs-mcp-server.log".into())
     };
 
+    // Clear existing log file if it exists
+    std::fs::remove_file(log_file.clone().unwrap()).ok();
+
     // Create the logger
     if let Some(log_file_path) = log_file {
         // Create parent directories if they don't exist
