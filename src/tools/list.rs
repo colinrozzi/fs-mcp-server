@@ -191,7 +191,27 @@ pub fn execute(args: &Value, allowed_paths: &AllowedPaths) -> Result<ToolCallRes
         } else if entry.file_type().is_symlink() {
             "symlink"
         } else {
-            "unknown"
+            // Try to get more detailed type information for special files
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::FileTypeExt;
+                let file_type = entry.file_type();
+                if file_type.is_block_device() {
+                    "block_device"
+                } else if file_type.is_char_device() {
+                    "char_device"
+                } else if file_type.is_fifo() {
+                    "fifo"
+                } else if file_type.is_socket() {
+                    "socket"
+                } else {
+                    "unknown"
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                "unknown"
+            }
         };
         
         // Use the full path
@@ -227,13 +247,34 @@ pub fn execute(args: &Value, allowed_paths: &AllowedPaths) -> Result<ToolCallRes
         entries.push(result_entry);
     }
     
-    // Sort entries: directories first, then files, alphabetically
-    entries.sort_by(|a, b| {
-        match (a.entry_type.as_str(), b.entry_type.as_str()) {
-            ("directory", "file") => std::cmp::Ordering::Less,
-            ("file", "directory") => std::cmp::Ordering::Greater,
-            _ => a.name.cmp(&b.name),
+    // Define the entry type ordering
+    fn get_type_order(entry_type: &str) -> i32 {
+        match entry_type {
+            "directory" => 0,    // Directories first
+            "file" => 1,         // Files second
+            "symlink" => 2,       // Symlinks third
+            "fifo" => 3,         // FIFOs/named pipes fourth
+            "socket" => 4,        // Sockets fifth
+            "block_device" => 5,  // Block devices sixth
+            "char_device" => 6,   // Character devices seventh
+            "unknown" => 7,       // Unknown types last
+            _ => 8,               // Any other types after that
         }
+    }
+    
+    // Sort entries by type and then alphabetically by name
+    entries.sort_by(|a, b| {
+        // First sort by type ordering
+        let a_order = get_type_order(&a.entry_type);
+        let b_order = get_type_order(&b.entry_type);
+        
+        // If same type, sort by name
+        if a_order == b_order {
+            return a.name.cmp(&b.name);
+        }
+        
+        // Otherwise sort by type order
+        a_order.cmp(&b_order)
     });
     
     // Create the result
@@ -250,6 +291,11 @@ pub fn execute(args: &Value, allowed_paths: &AllowedPaths) -> Result<ToolCallRes
             "directory" => "[DIR]",
             "file" => "[FILE]",
             "symlink" => "[LINK]",
+            "fifo" => "[FIFO]",
+            "socket" => "[SOCK]",
+            "block_device" => "[BLK]",
+            "char_device" => "[CHR]",
+            "unknown" => "[?]",
             _ => "[?]"
         };
         
