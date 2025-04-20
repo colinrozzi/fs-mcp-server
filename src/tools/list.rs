@@ -24,6 +24,10 @@ struct Entry {
     #[serde(skip_serializing_if = "Option::is_none")]
     modified: Option<String>,
     is_hidden: bool,
+    #[serde(skip_serializing)]
+    depth: usize,
+    #[serde(skip_serializing)]
+    rel_path: String,
 }
 
 // Struct representing list results
@@ -217,6 +221,13 @@ pub fn execute(args: &Value, allowed_paths: &AllowedPaths) -> Result<ToolCallRes
         // Use the full path
         let entry_path = entry.path().to_string_lossy().to_string();
         
+        // Get the relative path from the base directory
+        let rel_path = if let Ok(rel) = entry.path().strip_prefix(&validated_path) {
+            rel.to_string_lossy().to_string()
+        } else {
+            name.clone()
+        };
+        
         // Create entry
         let mut result_entry = Entry {
             name,
@@ -225,6 +236,8 @@ pub fn execute(args: &Value, allowed_paths: &AllowedPaths) -> Result<ToolCallRes
             size: None,
             modified: None,
             is_hidden,
+            depth: entry.depth(),
+            rel_path,
         };
         
         // Add metadata if requested
@@ -299,8 +312,19 @@ pub fn execute(args: &Value, allowed_paths: &AllowedPaths) -> Result<ToolCallRes
             _ => "[?]"
         };
         
-        // Format with type and name
-        let entry_text = format!("{} {}", type_str, entry.name);
+        // Format with type and name, handling recursive display
+        let entry_text = if recursive && entry.depth > 0 {
+            // Display relative path for recursive listings
+            if !entry.rel_path.is_empty() {
+                format!("{} {}", type_str, entry.rel_path)
+            } else {
+                // Fallback to name with indentation
+                let indent = "  ".repeat(entry.depth);
+                format!("{}{} {}", indent, type_str, entry.name)
+            }
+        } else {
+            format!("{} {}", type_str, entry.name)
+        };
         
         // Add size if available
         let entry_with_size = if let Some(size) = entry.size {
