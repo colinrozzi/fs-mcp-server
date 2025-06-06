@@ -15,8 +15,8 @@ name = "enhanced_client"
 path = "examples/enhanced_client.rs"
 
 [dependencies]
-mcp-protocol = { path = "../../rust-mcp/mcp-protocol" }
-mcp-server = { path = "../../rust-mcp/mcp-server" }
+mcp-protocol = {version =  "0.2.5" }
+modelcontextprotocol-server = {version = "0.1.2" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.28", features = ["full"] }
@@ -39,5 +39,5 @@ base64 = "0.13"
 assert_cmd = "2.0"
 predicates = "3.0"
 tempfile = "3.8"
-mcp-client = { path = "../../rust-mcp/mcp-client" }
+modelcontextprotocol-client = "0.1.2"
 tokio = { version = "1.28", features = ["full"] }

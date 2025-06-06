@@ -4,7 +4,7 @@ use mcp_protocol::types::tool::{ToolCallResult, ToolContent};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::fmt::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::SystemTime;
 use chrono::{DateTime, Utc};
 use tracing::{debug, warn};
@@ -166,8 +166,8 @@ pub fn execute(args: &Value, allowed_paths: &AllowedPaths) -> Result<ToolCallRes
             }
         };
         
-        // Skip the root directory itself if not at the top level
-        if entry.path() == validated_path && entry.depth() > 0 {
+        // Skip the root directory itself
+        if entry.path() == validated_path {
             continue;
         }
         

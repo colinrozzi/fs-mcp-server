@@ -1,12 +1,12 @@
 use anyhow::{Context, Result};
 use clap::Parser;
-use mcp_server::{transport::StdioTransport, ServerBuilder};
+use modelcontextprotocol_server::{transport::StdioTransport, ServerBuilder};
 use std::{
     env, fs,
     io::{self, BufRead},
     path::{Path, PathBuf},
 };
-use tracing::{debug, info, warn, Level};
+use tracing::{info, Level};
 use tracing_subscriber::{self, fmt, EnvFilter};
 
 mod tools;
@@ -129,7 +129,7 @@ fn read_allowed_dirs_from_config(config_path: &Path) -> Result<Vec<PathBuf>> {
 // Setup logging with optional file output
 fn setup_logging(log_level: &str, log_file: Option<&Path>) -> Result<()> {
     // Parse the log level
-    let level = match log_level.to_lowercase().as_str() {
+    let _level = match log_level.to_lowercase().as_str() {
         "error" => Level::ERROR,
         "warn" => Level::WARN,
         "info" => Level::INFO,
@@ -199,7 +199,7 @@ fn setup_logging(log_level: &str, log_file: Option<&Path>) -> Result<()> {
 }
 
 // Build the MCP server with all filesystem tools
-fn build_server(allowed_paths: AllowedPaths, max_file_size: u64) -> Result<mcp_server::Server> {
+fn build_server(allowed_paths: AllowedPaths, max_file_size: u64) -> Result<modelcontextprotocol_server::Server> {
     // Create a new server builder
     let mut server_builder =
         ServerBuilder::new("filesystem-server", "0.1.0").with_transport(StdioTransport::new());

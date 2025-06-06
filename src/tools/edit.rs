@@ -411,7 +411,7 @@ pub fn execute(args: &Value, allowed_paths: &AllowedPaths) -> Result<ToolCallRes
     };
     
     // Convert to JSON and then to text
-    let json = serde_json::to_string_pretty(&response).context("Failed to serialize response")?;
+    let _json = serde_json::to_string_pretty(&response).context("Failed to serialize response")?;
     
     // Build a user-friendly text response
     let mut text = format!("File edited: {}\n", response.path);

@@ -14,7 +14,7 @@ pub fn schema() -> Value {
 }
 
 // Execute the list_allowed_dirs tool
-pub fn execute(args: &Value, allowed_paths: &AllowedPaths) -> Result<ToolCallResult> {
+pub fn execute(_args: &Value, allowed_paths: &AllowedPaths) -> Result<ToolCallResult> {
     // Get all allowed directories
     let dirs = allowed_paths.all_paths();
     

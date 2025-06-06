@@ -1,5 +1,5 @@
 use anyhow::Result;
-use mcp_client::{ClientBuilder, transport::StdioTransport};
+use modelcontextprotocol_client::{ClientBuilder, transport::StdioTransport};
 use serde_json::json;
 use std::env;
 use std::sync::Arc;
