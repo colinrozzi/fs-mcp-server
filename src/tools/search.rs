@@ -8,11 +8,11 @@ use serde_json::{json, Value};
 use std::{
     fmt::Write as _,
     fs::File,
-    io::{BufRead, BufReader, Read},
-    path::{Path, PathBuf},
+    io::{BufRead, BufReader},
+    path::Path,
     time::{Duration, Instant},
 };
-use tracing::{debug, error, warn};
+use tracing::{debug, warn};
 use walkdir::{DirEntry, WalkDir};
 
 use crate::utils::path::{AllowedPaths, is_text_file, PathError};

@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 use std::{
     fs::{self, OpenOptions},
     io::Write as IoWrite,
-    path::{Path, PathBuf},
+    path::Path,
 };
 use tracing::{debug, warn};
 use base64;

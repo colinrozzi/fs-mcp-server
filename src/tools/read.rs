@@ -294,7 +294,7 @@ fn read_text_file(
     max_size: u64,
     metadata: FileMetadata,
 ) -> Result<ToolCallResult> {
-    let mut file = File::open(path)?;
+    let file = File::open(path)?;
     
     // Determine how much to read
     let file_size = metadata.size;

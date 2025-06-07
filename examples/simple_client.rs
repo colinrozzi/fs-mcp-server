@@ -2,7 +2,6 @@ use anyhow::Result;
 use modelcontextprotocol_client::{ClientBuilder, transport::StdioTransport};
 use serde_json::json;
 use std::env;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 #[tokio::main]
@@ -29,7 +28,7 @@ async fn main() -> Result<()> {
     }
     
     // Start the server with multiple allowed directories
-    let mut server_args = vec![
+    let server_args = vec![
         "--allowed-dirs".to_string(),
         allowed_dirs.join(","),
         "--log-level".to_string(),

@@ -27,7 +27,7 @@ async fn main() -> Result<()> {
     fs::write(&test_file, initial_content)?;
     
     // Start the server with the current directory as allowed
-    let mut server_args = vec![
+    let server_args = vec![
         "--allowed-dirs".to_string(),
         current_dir.to_str().unwrap().to_string(),
         "--log-level".to_string(),
