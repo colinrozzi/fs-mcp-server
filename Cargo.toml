@@ -15,8 +15,8 @@ name = "enhanced_client"
 path = "examples/enhanced_client.rs"
 
 [dependencies]
-mcp-protocol = {version =  "0.2.5" }
-modelcontextprotocol-server = {version = "0.1.2" }
+mcp-protocol = {version =  "0.2.5", features = ["camel_case"] }
+modelcontextprotocol-server = {version = "0.1.2" , features = ["camel_case"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.28", features = ["full"] }
