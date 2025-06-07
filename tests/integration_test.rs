@@ -3,8 +3,6 @@ use modelcontextprotocol_client::{transport::StdioTransport, ClientBuilder};
 use serde_json::json;
 use std::{
     env,
-    path::{Path, PathBuf},
-    process::Command,
     sync::Arc,
 };
 use tempfile::TempDir;
