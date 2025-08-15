@@ -46,6 +46,25 @@ struct CliArgs {
     log_file: Option<PathBuf>,
 }
 
+/// Get the default log file path based on the current platform
+fn get_default_log_path() -> PathBuf {
+    if cfg!(windows) {
+        // On Windows, try %TEMP%, %TMP%, or fallback to current directory
+        std::env::var("TEMP")
+            .or_else(|_| std::env::var("TMP"))
+            .map(|temp| PathBuf::from(temp).join("fs-mcp-server.log"))
+            .unwrap_or_else(|_| PathBuf::from("fs-mcp-server.log"))
+    } else {
+        // On Unix-like systems, try /tmp first, then fallback to current directory
+        let tmp_path = PathBuf::from("/tmp/fs-mcp-server.log");
+        if PathBuf::from("/tmp").exists() {
+            tmp_path
+        } else {
+            PathBuf::from("fs-mcp-server.log")
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Parse command line arguments
@@ -141,7 +160,9 @@ fn setup_logging(log_level: &str, log_file: Option<&Path>) -> Result<()> {
     let log_file = if let Some(path) = log_file {
         Some(path.to_path_buf())
     } else {
-        Some("/Users/colinrozzi/work/mcp-servers/fs-mcp-server/logs/fs-mcp-server.log".into())
+        // Create log file in platform-appropriate directory
+        let log_path = get_default_log_path();
+        Some(log_path)
     };
 
     // Clear existing log file if it exists
